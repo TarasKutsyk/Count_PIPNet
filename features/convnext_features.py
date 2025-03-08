@@ -8,7 +8,8 @@ def replace_convlayers_convnext(model, threshold):
             replace_convlayers_convnext(module, threshold)
         if isinstance(module, nn.Conv2d):
             if module.stride[0] == 2:
-                if module.in_channels > threshold: #replace bigger strides to reduce receptive field, skip some 2x2 layers. >100 gives output size (26, 26). >300 gives (13, 13)
+                if module.in_channels > threshold: #replace bigger strides to reduce receptive field, skip some 2x2 layers. 
+                    # >100 gives output size (26, 26). >300 gives (13, 13)
                     module.stride = tuple(s//2 for s in module.stride)
                     
     return model
