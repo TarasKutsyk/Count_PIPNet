@@ -149,6 +149,7 @@ def run_pipnet(args=None):
             param.requires_grad = True
         for param in net.module._classification.parameters():
             param.requires_grad = False
+        
         for param in params_to_freeze:
             param.requires_grad = True # can be set to False when you want to freeze more layers
         for param in params_backbone:

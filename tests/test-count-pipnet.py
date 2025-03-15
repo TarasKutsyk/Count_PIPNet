@@ -26,7 +26,7 @@ class TestCountPIPNet(unittest.TestCase):
         """
         # Create test args
         self.args = argparse.Namespace()
-        self.args.net = 'resnet18'  # Use a small network for faster testing
+        self.args.net = 'convnext_tiny_26'  # Use a small network for faster testing
         self.args.num_features = 0  # Use default number of features
         self.args.disable_pretrained = True  # Don't load pretrained weights for testing
         self.args.bias = True  # Use bias in linear layers

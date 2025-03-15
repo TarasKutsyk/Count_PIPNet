@@ -3,8 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from features.resnet_features import resnet18_features, resnet34_features, resnet50_features, resnet50_features_inat, resnet101_features, resnet152_features
-from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features 
+from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 from typing import List, Tuple, Dict, Optional, Union, Callable
 from torch.distributions.relaxed_categorical import RelaxedOneHotCategorical
 
@@ -41,9 +40,6 @@ class GumbelSoftmax(nn.Module):
         else:
             # During inference use hard samples for discrete prototype activations
             return F.gumbel_softmax(x, tau=self.tau, hard=True, dim=self.dim)
-            
-            # Alternative option: use very low temperature softmax for nearly one-hot vectors
-            # return F.softmax(x / 0.01, dim=self.dim)  # 0.01 is very low temperature
 
 
 class StraightThroughEstimator(torch.autograd.Function):
@@ -244,27 +240,18 @@ class CountPIPNet(nn.Module):
         if self._freeze_mode == 'none':
             # Train all parameters
             return
-            
+                
         elif self._freeze_mode == 'backbone':
             # Freeze only backbone
-            for param in self._net.parameters():
-                param.requires_grad = False
-                
+            for name, param in self.named_parameters():
+                if name.startswith('_net'):
+                    param.requires_grad = False
+                    
         elif self._freeze_mode == 'all_except_classification':
-            # Freeze backbone
-            for param in self._net.parameters():
-                param.requires_grad = False
-                
-            # Freeze add-on layers
-            for param in self._add_on.parameters():
-                param.requires_grad = False
-                
-            # Also freeze one-hot encoder parameters if any
-            # (Likely none, but included for completeness)
-            for name, module in self.named_children():
-                if name != '_classification':
-                    for param in module.parameters():
-                        param.requires_grad = False
+            # Freeze all except classification parameters
+            for name, param in self.named_parameters():
+                if not name.startswith('_classification'):
+                    param.requires_grad = False
 
     def forward(self, xs, inference=False):
         """
@@ -309,18 +296,29 @@ class CountPIPNet(nn.Module):
         
         # Return intermediate representations for interpretability
         return proto_features, flattened_counts, out
+    
+    def update_temperature(self, current_epoch, total_epochs):
+        """
+        Update the Gumbel-Softmax temperature parameter during training.
+        
+        Args:
+            current_epoch: Current training epoch
+            total_epochs: Total number of training epochs
+        """
+        # Find the Gumbel-Softmax layer
+        for module in self._add_on.modules():
+            if isinstance(module, GumbelSoftmax):
+                # Anneal from 1.0 to 0.1
+                module.tau = max(0.1, 1.0 - 0.9 * (current_epoch / total_epochs))
+                print(f"Updated Gumbel-Softmax temperature to {module.tau:.3f}", flush=True)
+                break
 
 
-# Base architectures mapping
-base_architecture_to_features = {'resnet18': resnet18_features,
-                                 'resnet34': resnet34_features,
-                                 'resnet50': resnet50_features,
-                                 'resnet50_inat': resnet50_features_inat,
-                                 'resnet101': resnet101_features,
-                                 'resnet152': resnet152_features,
-                                 'convnext_tiny_26': convnext_tiny_26_features,
-                                 'convnext_tiny_13': convnext_tiny_13_features}
-
+# Base architectures mapping (ConvNeXt only)
+base_architecture_to_features = {
+    'convnext_tiny_26': convnext_tiny_26_features,
+    'convnext_tiny_13': convnext_tiny_13_features
+}
 
 class NonNegLinear(nn.Module):
     """
@@ -372,8 +370,9 @@ class NonNegLinear(nn.Module):
         return F.linear(input, torch.relu(self.weight), self.bias)
 
 
+# Cleaner channel detection for get_count_network function
 def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int = 3, 
-                       freeze_mode: str = 'none', use_ste: bool = False):
+                     freeze_mode: str = 'none', use_ste: bool = False):
     """
     Create a CountPIPNet model with the specified parameters.
     
@@ -389,49 +388,48 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     Returns:
         Tuple of (model, num_prototypes)
     """
-    # Get the feature extractor backbone
-    features = base_architecture_to_features[args.net](pretrained=not args.disable_pretrained)
-    features_name = str(features).upper()
+    # Validate network architecture is supported
+    if args.net not in base_architecture_to_features:
+        supported = list(base_architecture_to_features.keys())
+        raise ValueError(f"Network '{args.net}' is not supported. Supported networks: {supported}")
     
-    if 'next' in args.net:
-        features_name = str(args.net).upper()
-        
-    # Determine the number of channels in the feature map
-    if features_name.startswith('RES') or features_name.startswith('CONVNEXT'):
-        first_add_on_layer_in_channels = \
-            [i for i in features.modules() if isinstance(i, nn.Conv2d)][-1].out_channels
-    else:
-        raise Exception('other base architecture NOT implemented')
+    # Get the feature extractor backbone (ConvNeXt only)
+    use_mid_layers = getattr(args, 'use_mid_layers', False)
+    num_stages = getattr(args, 'num_stages', 2)
+    
+    features = base_architecture_to_features[args.net](
+        pretrained=not args.disable_pretrained,
+        use_mid_layers=use_mid_layers,
+        num_stages=num_stages)
+    
+    # Determine the number of output channels using the most reliable method
+    first_add_on_layer_in_channels = detect_output_channels(features)
     
     # Determine the number of prototypes
     if args.num_features == 0:
         num_prototypes = first_add_on_layer_in_channels
-        print("Number of prototypes: ", num_prototypes, flush=True)
+        print(f"Number of prototypes: {num_prototypes}", flush=True)
         
-        # Use Gumbel-Softmax instead of regular Softmax for better discretization
+        # Use Gumbel-Softmax for better discretization
         add_on_layers = nn.Sequential(
-            GumbelSoftmax(dim=1, tau=1.0)  # Softmax over prototypes, encouraging one-hot encoding
+            GumbelSoftmax(dim=1, tau=1.0)
         )
     else:
         num_prototypes = args.num_features
-        print("Number of prototypes set from", first_add_on_layer_in_channels, "to", num_prototypes, 
-              ". Extra 1x1 conv layer added. Not recommended.", flush=True)
+        print(f"Number of prototypes set from {first_add_on_layer_in_channels} to {num_prototypes}. Extra 1x1 conv layer added.", flush=True)
         
         # Add 1x1 convolution to adjust the number of prototypes
         add_on_layers = nn.Sequential(
             nn.Conv2d(in_channels=first_add_on_layer_in_channels, out_channels=num_prototypes, 
                      kernel_size=1, stride=1, padding=0, bias=True),
-            GumbelSoftmax(dim=1, tau=1.0)  # Softmax over prototypes, encouraging one-hot encoding
+            GumbelSoftmax(dim=1, tau=1.0)
         )
     
     # The expanded dimensionality after one-hot encoding of count values
     expanded_dim = num_prototypes * (max_count + 1)  # +1 for count=0
     
     # Create the classification layer
-    if args.bias:
-        classification_layer = NonNegLinear(expanded_dim, num_classes, bias=True)
-    else:
-        classification_layer = NonNegLinear(expanded_dim, num_classes, bias=False)
+    classification_layer = NonNegLinear(expanded_dim, num_classes, bias=getattr(args, 'bias', False))
     
     # Create the full CountPIPNet model
     model = CountPIPNet(
@@ -447,3 +445,31 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     )
     
     return model, num_prototypes
+
+def detect_output_channels(features):
+    """
+    Detect the number of output channels from a feature extractor.
+    
+    Args:
+        features: Feature extractor model
+        
+    Returns:
+        Number of output channels
+    """
+    # For MidLayerConvNeXt, check the last stage directly
+    if hasattr(features, 'features') and len(features.features) > 0:
+        # Get the last module in the features Sequential
+        last_stage = features.features[-1]
+        
+        # Find the last convolutional layer
+        last_conv = None
+        for module in last_stage.modules():
+            if isinstance(module, nn.Conv2d):
+                last_conv = module
+        
+        if last_conv is not None:
+            channels = last_conv.out_channels
+            print(f"Detected {channels} output channels from last conv layer", flush=True)
+            return channels
+    
+    raise RuntimeError("Could not detect output channels from the feature extractor.")

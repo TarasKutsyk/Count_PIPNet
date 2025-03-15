@@ -117,7 +117,11 @@ def get_args() -> argparse.Namespace:
                         type=str,
                         default='./experiments',
                         help='Folder with images that PIP-Net will predict and explain, that are not in the training or test set. E.g. images with 2 objects or OOD image. Images should be in subfolder. E.g. images in ./experiments/images/, and argument --./experiments')
-
+    parser.add_argument('--use_mid_layers', action='store_true', 
+                        help='Use only middle layers of the backbone')
+    parser.add_argument('--num_stages', type=int, default=2,
+                        help='Number of stages to use when using middle layers')
+    
     args = parser.parse_args()
     if len(args.log_dir.split('/'))>2:
         if not os.path.exists(args.log_dir):
@@ -175,20 +179,59 @@ def get_optimizer_nn(net, args: argparse.Namespace) -> torch.optim.Optimizer:
     
     elif 'convnext' in args.net:
         print("chosen network is convnext", flush=True)
-        for name,param in net.module._net.named_parameters():
-            if 'features.7.2' in name: 
-                params_to_train.append(param)
-            elif 'features.7' in name or 'features.6' in name:
-                params_to_freeze.append(param)
-            # CUDA MEMORY ISSUES? COMMENT LINE 202-203 AND USE THE FOLLOWING LINES INSTEAD
-            # elif 'features.5' in name or 'features.4' in name:
-            #     params_backbone.append(param)
-            # else:
-            #     param.requires_grad = False
-            else:
-                params_backbone.append(param)
+        
+        # Handle mid-layer usage with different parameter grouping
+        if hasattr(args, 'use_mid_layers') and args.use_mid_layers:
+            num_stages = args.num_stages if hasattr(args, 'num_stages') else 2
+            print(f"Using only {num_stages} stages of ConvNeXt", flush=True)
+            
+            # Get a mapping of parameter names to help identify stages
+            stage_prefixes = {
+                0: "stem",  # The stem layer
+                1: "stages.0",  # First stage
+                2: "stages.1",  # Second stage
+                # No need to include later stages as they won't be in the model
+            }
+            
+            # Group parameters based on stage
+            for name, param in net.module._net.named_parameters():
+                # Last block of the last included stage goes to params_to_train
+                if f"stages.{num_stages-1}.{2}" in name:  # Assuming 3 blocks per stage, targeting the last one
+                    params_to_train.append(param)
+                    print(f"Added to params_to_train: {name}", flush=True)
+                
+                # Other blocks of the last stage go to params_to_freeze
+                elif f"stages.{num_stages-1}" in name:
+                    params_to_freeze.append(param)
+                    print(f"Added to params_to_freeze: {name}", flush=True)
+                
+                # Previous stage blocks go to params_to_freeze
+                elif num_stages > 1 and f"stages.{num_stages-2}" in name:
+                    params_to_freeze.append(param)
+                    print(f"Added to params_to_freeze: {name}", flush=True)
+                
+                # Everything else (stem and earlier stages) go to params_backbone
+                else:
+                    params_backbone.append(param)
+                    print(f"Added to params_backbone: {name}", flush=True)
+        
+        # Original parameter grouping logic for full ConvNeXt
+        else:
+            for name, param in net.module._net.named_parameters():
+                if 'features.7.2' in name: 
+                    params_to_train.append(param)
+                elif 'features.7' in name or 'features.6' in name:
+                    params_to_freeze.append(param)
+                # CUDA MEMORY ISSUES? COMMENT LINE 202-203 AND USE THE FOLLOWING LINES INSTEAD
+                # elif 'features.5' in name or 'features.4' in name:
+                #     params_backbone.append(param)
+                # else:
+                #     param.requires_grad = False
+                else:
+                    params_backbone.append(param)
     else:
         print("Network is not ResNet or ConvNext.", flush=True)     
+    
     classification_weight = []
     classification_bias = []
     for name, param in net.module._classification.named_parameters():
@@ -212,9 +255,8 @@ def get_optimizer_nn(net, args: argparse.Namespace) -> torch.optim.Optimizer:
     ]
           
     if args.optimizer == 'Adam':
-        optimizer_net = torch.optim.AdamW(paramlist_net,lr=args.lr,weight_decay=args.weight_decay)
-        optimizer_classifier = torch.optim.AdamW(paramlist_classifier,lr=args.lr,weight_decay=args.weight_decay)
+        optimizer_net = torch.optim.AdamW(paramlist_net, lr=args.lr, weight_decay=args.weight_decay)
+        optimizer_classifier = torch.optim.AdamW(paramlist_classifier, lr=args.lr, weight_decay=args.weight_decay)
         return optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone
     else:
         raise ValueError("this optimizer type is not implemented")
-
