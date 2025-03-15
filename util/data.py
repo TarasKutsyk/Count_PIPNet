@@ -1,4 +1,3 @@
-
 import numpy as np
 import argparse
 import torch
@@ -28,6 +27,11 @@ def get_data(args: argparse.Namespace):
         return get_cars(True, './data/cars/dataset/train', './data/cars/dataset/train', './data/cars/dataset/test', args.image_size, args.seed, args.validation_size)
     if args.dataset == 'grayscale_example':
         return get_grayscale(True, './data/train', './data/train', './data/test', args.image_size, args.seed, args.validation_size)
+    # Added new dataset options for our custom datasets
+    if args.dataset == 'geometric_shapes':
+        return get_geometric_shapes(True, './data/geometric_shapes/dataset/train', './data/geometric_shapes/dataset/train', './data/geometric_shapes/dataset/test', args.image_size, args.seed, args.validation_size)
+    if args.dataset == 'mnist_counting':
+        return get_mnist_counting(True, './data/mnist_counting/dataset/train', './data/mnist_counting/dataset/train', './data/mnist_counting/dataset/test', args.image_size, args.seed, args.validation_size)
     raise Exception(f'Could not load data set, data set "{args.dataset}" not found!')
 
 def get_dataloaders(args: argparse.Namespace, device):
@@ -202,6 +206,114 @@ def get_pets(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_si
         transforms.RandomCrop(size=(img_size, img_size)), #includes crop
         transforms.ToTensor(),
         normalize
+        ])
+    else:
+        transform1 = transform_no_augment    
+        transform2 = transform_no_augment           
+
+    return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
+
+# New function for the geometric shapes dataset
+def get_geometric_shapes(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, validation_size:float): 
+    """
+    Get the geometric shapes dataset with appropriate transformations.
+    
+    This dataset contains synthetic images with different geometric shapes (circle, square, triangle, hexagon)
+    in varying counts. The dataset is designed to test CountPIPNet's ability to count and recognize shapes.
+    
+    Args:
+        augment: Whether to apply data augmentation
+        train_dir: Directory containing training images
+        project_dir: Directory containing projection images
+        test_dir: Directory containing test images
+        img_size: Target image size
+        seed: Random seed for reproducibility
+        validation_size: Proportion of data to use for validation if test_dir is None
+        
+    Returns:
+        Processed datasets and related information
+    """
+    # Standard ImageNet mean and std for normalization 
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    normalize = transforms.Normalize(mean=mean, std=std)
+    
+    # Basic transformation without augmentation
+    transform_no_augment = transforms.Compose([
+        transforms.Resize(size=(img_size, img_size)),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    # For geometric shapes, we use lighter augmentation since they're synthetic
+    if augment:
+        # First stage of augmentation (size and geometric)
+        transform1 = transforms.Compose([
+            transforms.Resize(size=(img_size+32, img_size+32)),
+            transforms.RandomRotation(10, fill=255),  # Fill with white (255) instead of black (0)
+            transforms.RandomResizedCrop(img_size+8, scale=(0.95, 1.))
+        ])
+        
+        # Second stage of augmentation (color and cropping)
+        transform2 = transforms.Compose([
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),  # Minor color jitter
+            transforms.RandomCrop(size=(img_size, img_size)),
+            transforms.ToTensor(),
+            normalize
+        ])
+    else:
+        transform1 = transform_no_augment    
+        transform2 = transform_no_augment           
+
+    return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
+
+# New function for the MNIST counting dataset
+def get_mnist_counting(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, validation_size:float): 
+    """
+    Get the MNIST counting dataset with appropriate transformations.
+    
+    This dataset contains synthetic images with multiple MNIST digits in varying counts.
+    The dataset is designed to test CountPIPNet's ability to count specific digits.
+    
+    Args:
+        augment: Whether to apply data augmentation
+        train_dir: Directory containing training images
+        project_dir: Directory containing projection images
+        test_dir: Directory containing test images
+        img_size: Target image size
+        seed: Random seed for reproducibility
+        validation_size: Proportion of data to use for validation if test_dir is None
+        
+    Returns:
+        Processed datasets and related information
+    """
+    # Standard ImageNet mean and std for normalization 
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    normalize = transforms.Normalize(mean=mean, std=std)
+    
+    # Basic transformation without augmentation
+    transform_no_augment = transforms.Compose([
+        transforms.Resize(size=(img_size, img_size)),
+        transforms.ToTensor(),
+        normalize
+    ])
+    
+    # For MNIST counting, we use lighter augmentation since they're synthetic
+    if augment:
+        # First stage of augmentation (size and geometric)
+        transform1 = transforms.Compose([
+            transforms.Resize(size=(img_size+24, img_size+24)),
+            transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1), fill=255),  # Fill with white (255) instead of black (0)
+            transforms.RandomResizedCrop(img_size+8, scale=(0.95, 1.))
+        ])
+        
+        # Second stage of augmentation (color and cropping)
+        transform2 = transforms.Compose([
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),  # Minor color jitter
+            transforms.RandomCrop(size=(img_size, img_size)),
+            transforms.ToTensor(),
+            normalize
         ])
     else:
         transform1 = transform_no_augment    
@@ -401,4 +513,3 @@ class TrivialAugmentWideNoShape(transforms.TrivialAugmentWide):
             "AutoContrast": (torch.tensor(0.0), False),
             "Equalize": (torch.tensor(0.0), False),
         }
-
