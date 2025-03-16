@@ -20,7 +20,7 @@ class MidLayerConvNeXt(nn.Module):
         super().__init__()
         
         # In torchvision's ConvNeXt, 'features' contains the main network
-        # The 'features' module has structure: [0]=downsample, [1...4]=stages
+        # The 'features' module has structure: [0]=downsample, [1...7]=stages
         self.features = nn.Sequential()
         
         # Add the downsample layer (what functions as the stem)
@@ -28,7 +28,7 @@ class MidLayerConvNeXt(nn.Module):
             self.features.add_module('0', original_model.features[0])
             
             # Add the desired number of stages (1-indexed in ConvNeXt)
-            for i in range(min(num_stages, len(original_model.features) - 1)):  # ConvNeXt has 4 stages max
+            for i in range(min(num_stages, len(original_model.features) - 1)):
                 if i+1 < len(original_model.features):
                     self.features.add_module(str(i+1), original_model.features[i+1])
             

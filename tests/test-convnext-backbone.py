@@ -40,7 +40,7 @@ def analyze_convnext_stages():
                     pass
     
     # Now test with different stage counts
-    for num_stages in [1, 2, 3]:
+    for num_stages in [1, 2, 3, 4]:
         print("\n" + "="*80)
         print(f"ANALYZING NUM_STAGES = {num_stages}")
         print("="*80)
@@ -116,7 +116,6 @@ def analyze_convnext_stages():
         for name, data in stage_data.items():
             if data['output'].shape == final_output.shape and torch.allclose(data['output'], final_output):
                 matching_stage = name
-                break
         
         if matching_stage:
             print(f"  ✓ Final output is identical to {matching_stage} output")

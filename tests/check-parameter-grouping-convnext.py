@@ -166,7 +166,6 @@ def main():
         last_stage_in_train = any(stage == last_stage for (stage, _) in stage_blocks['train'].keys())
         
         # Check if early stages are in backbone
-        # Allow stem (0) and transition stages (≥ num_stages) in backbone
         early_stages_in_backbone = all(stage < num_stages - 1
                                     for (stage, _) in stage_blocks['backbone'].keys() 
                                     if isinstance(stage, int))
