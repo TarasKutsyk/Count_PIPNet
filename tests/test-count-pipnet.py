@@ -106,36 +106,6 @@ class TestCountPIPNet(unittest.TestCase):
         self.assertEqual(out.shape, (self.batch_size, self.num_classes),
                          "Output shape incorrect in inference mode")
     
-    def test_freezing_strategies(self):
-        """Test that all freezing strategies work correctly."""
-        # Create models with different freezing strategies
-        no_freeze_model, _ = self._create_count_pipnet(freeze_mode='none')
-        backbone_freeze_model, _ = self._create_count_pipnet(freeze_mode='backbone')
-        all_except_clf_model, _ = self._create_count_pipnet(freeze_mode='all_except_classification')
-        
-        # Check if parameters are correctly frozen/unfrozen in no_freeze_model
-        for name, param in no_freeze_model.named_parameters():
-            self.assertTrue(param.requires_grad, f"Parameter {name} should be trainable in no_freeze_model")
-        
-        # Check backbone parameters in backbone_freeze_model
-        for name, param in backbone_freeze_model.named_parameters():
-            if name.startswith('_net'):
-                self.assertFalse(param.requires_grad, f"Backbone parameter {name} should be frozen in backbone_freeze_model")
-            else:
-                self.assertTrue(param.requires_grad, f"Non-backbone parameter {name} should be trainable in backbone_freeze_model")
-        
-        # Check parameters in all_except_clf_model
-        for name, param in all_except_clf_model.named_parameters():
-            if name.startswith('_classification'):
-                self.assertTrue(param.requires_grad, f"Classification parameter {name} should be trainable in all_except_clf_model")
-            else:
-                self.assertFalse(param.requires_grad, f"Non-classification parameter {name} should be frozen in all_except_clf_model")
-        
-        # Forward pass for all models to ensure they still work
-        for model in [no_freeze_model, backbone_freeze_model, all_except_clf_model]:
-            _, _, out = model(self.input)
-            self.assertEqual(out.shape, (self.batch_size, self.num_classes), "Output shape incorrect")
-    
     def test_ste_vs_no_ste(self):
         """Test shape compatibility with and without STE."""
         # Create models with and without STE

@@ -153,85 +153,51 @@ def save_args(args: argparse.Namespace, directory_path: str) -> None:
     with open(directory_path + '/args.pickle', 'wb') as f:
         pickle.dump(args, f)                                                                               
     
-def get_optimizer_nn(net, args: argparse.Namespace) -> torch.optim.Optimizer:
+def get_optimizer_nn(net, args: argparse.Namespace):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    #create parameter groups
+    # Create parameter groups
     params_to_freeze = []
     params_to_train = []
     params_backbone = []
-    # set up optimizer
-    if 'resnet50' in args.net: 
-        # freeze resnet50 except last convolutional layer
-        for name,param in net.module._net.named_parameters():
+    
+    # Handle different network architectures
+    if 'convnext' in args.net:
+        if hasattr(args, 'use_mid_layers') and args.use_mid_layers:
+            group_convnext_mid_layer_parameters(
+                net.module._net,
+                params_to_train,
+                params_to_freeze,
+                params_backbone,
+                args.num_stages if hasattr(args, 'num_stages') else 2
+            )
+        else:
+            # Standard ConvNeXt without mid-layers
+            for name, param in net.module._net.named_parameters():
+                if 'features.7.2' in name: 
+                    params_to_train.append(param)
+                elif 'features.7' in name or 'features.6' in name:
+                    params_to_freeze.append(param)
+                else:
+                    params_backbone.append(param)
+    elif 'resnet50' in args.net:
+        # ResNet parameter grouping (unchanged)
+        for name, param in net.module._net.named_parameters():
             if 'layer4.2' in name:
                 params_to_train.append(param)
             elif 'layer4' in name or 'layer3' in name:
                 params_to_freeze.append(param)
             elif 'layer2' in name:
                 params_backbone.append(param)
-            else: #such that model training fits on one gpu. 
+            else:
                 param.requires_grad = False
-                # params_backbone.append(param)
-    
-    elif 'convnext' in args.net:
-        print("chosen network is convnext", flush=True)
-        
-        # Handle mid-layer usage with different parameter grouping
-        if hasattr(args, 'use_mid_layers') and args.use_mid_layers:
-            num_stages = args.num_stages if hasattr(args, 'num_stages') else 2
-            print(f"Using only {num_stages} stages of ConvNeXt", flush=True)
-            
-            # Get a mapping of parameter names to help identify stages
-            stage_prefixes = {
-                0: "stem",  # The stem layer
-                1: "stages.0",  # First stage
-                2: "stages.1",  # Second stage
-                # No need to include later stages as they won't be in the model
-            }
-            
-            # Group parameters based on stage
-            for name, param in net.module._net.named_parameters():
-                # Last block of the last included stage goes to params_to_train
-                if f"stages.{num_stages-1}.{2}" in name:  # Assuming 3 blocks per stage, targeting the last one
-                    params_to_train.append(param)
-                    print(f"Added to params_to_train: {name}", flush=True)
-                
-                # Other blocks of the last stage go to params_to_freeze
-                elif f"stages.{num_stages-1}" in name:
-                    params_to_freeze.append(param)
-                    print(f"Added to params_to_freeze: {name}", flush=True)
-                
-                # Previous stage blocks go to params_to_freeze
-                elif num_stages > 1 and f"stages.{num_stages-2}" in name:
-                    params_to_freeze.append(param)
-                    print(f"Added to params_to_freeze: {name}", flush=True)
-                
-                # Everything else (stem and earlier stages) go to params_backbone
-                else:
-                    params_backbone.append(param)
-                    print(f"Added to params_backbone: {name}", flush=True)
-        
-        # Original parameter grouping logic for full ConvNeXt
-        else:
-            for name, param in net.module._net.named_parameters():
-                if 'features.7.2' in name: 
-                    params_to_train.append(param)
-                elif 'features.7' in name or 'features.6' in name:
-                    params_to_freeze.append(param)
-                # CUDA MEMORY ISSUES? COMMENT LINE 202-203 AND USE THE FOLLOWING LINES INSTEAD
-                # elif 'features.5' in name or 'features.4' in name:
-                #     params_backbone.append(param)
-                # else:
-                #     param.requires_grad = False
-                else:
-                    params_backbone.append(param)
     else:
         print("Network is not ResNet or ConvNext.", flush=True)     
     
+    # Classification layer parameters (unchanged)
     classification_weight = []
     classification_bias = []
     for name, param in net.module._classification.named_parameters():
@@ -243,6 +209,7 @@ def get_optimizer_nn(net, args: argparse.Namespace) -> torch.optim.Optimizer:
             if args.bias:
                 classification_bias.append(param)
     
+    # Create parameter lists for optimizers
     paramlist_net = [
             {"params": params_backbone, "lr": args.lr_net, "weight_decay_rate": args.weight_decay},
             {"params": params_to_freeze, "lr": args.lr_block, "weight_decay_rate": args.weight_decay},
@@ -254,9 +221,82 @@ def get_optimizer_nn(net, args: argparse.Namespace) -> torch.optim.Optimizer:
             {"params": classification_bias, "lr": args.lr, "weight_decay_rate": 0},
     ]
           
+    # Create optimizers
     if args.optimizer == 'Adam':
         optimizer_net = torch.optim.AdamW(paramlist_net, lr=args.lr, weight_decay=args.weight_decay)
         optimizer_classifier = torch.optim.AdamW(paramlist_classifier, lr=args.lr, weight_decay=args.weight_decay)
         return optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone
     else:
         raise ValueError("this optimizer type is not implemented")
+
+def group_convnext_mid_layer_parameters(model, params_to_train, params_to_freeze, params_backbone, num_stages=2):
+    """
+    Group ConvNeXt parameters when using mid-layers based on the observed architecture:
+    
+    ConvNeXt has an alternating stage pattern:
+    - Even stages (0,2,4,6): Transform dimensions (stem, transitions)
+    - Odd stages (1,3,5,7): Process content (maintain dimensions)
+    
+    Parameters are grouped by training priority:
+    1. params_to_train: The final stage (highest training priority)
+    2. params_to_freeze: Intermediate stages (medium priority)
+    3. params_backbone: Early stages (lowest priority)
+    """
+    # Track parameter counts for verification
+    counts = {'train': 0, 'freeze': 0, 'backbone': 0}
+    stage_assignments = {}
+    
+    # Get the output stage number
+    output_stage = num_stages
+    
+    # Group parameters based on stage number
+    for name, param in model.named_parameters():
+        # Extract stage number from parameter name
+        if not name.startswith('features.'):
+            continue
+            
+        parts = name.split('.')
+        if len(parts) < 2 or not parts[1].isdigit():
+            # Handle parameters without clear stage numbering
+            params_backbone.append(param)
+            counts['backbone'] += 1
+            continue
+            
+        stage_num = int(parts[1])
+        
+        # Record which group this stage is assigned to
+        if stage_num not in stage_assignments:
+            stage_assignments[stage_num] = set()
+        
+        # Assign parameters to groups based on stage number
+        if stage_num == output_stage:
+            # The stage producing the final output gets highest priority
+            params_to_train.append(param)
+            counts['train'] += 1
+            stage_assignments[stage_num].add('train')
+
+            # print(f"Assigning {name} to train group", flush=True)
+        elif stage_num == output_stage - 1:
+            # The immediate previous stages get medium priority
+            params_to_freeze.append(param)
+            counts['freeze'] += 1
+            stage_assignments[stage_num].add('freeze')
+            # print(f"Assigning {name} to freeze group", flush=True)
+        else:
+            # Earlier stages get lowest priority
+            params_backbone.append(param)
+            counts['backbone'] += 1
+            stage_assignments[stage_num].add('backbone')
+            # print(f"Assigning {name} to backbone group", flush=True)
+    
+    # Print summary information
+    print(f"\nParameter grouping for ConvNeXt with {num_stages} stages:", flush=True)
+    print(f"Total parameters: {counts['train']} trainable, {counts['freeze']} freezable, {counts['backbone']} backbone", flush=True)
+    
+    # Print stage assignments for clarity
+    print("\nStage assignments:", flush=True)
+    for stage in sorted(stage_assignments.keys()):
+        groups = ", ".join(stage_assignments[stage])
+        print(f"  Stage {stage}: {groups}", flush=True)
+    
+    return params_to_train, params_to_freeze, params_backbone

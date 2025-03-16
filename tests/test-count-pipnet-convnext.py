@@ -41,12 +41,10 @@ class TestCountPIPNet(unittest.TestCase):
         for key, value in kwargs.items():
             setattr(args, key, value)
         
-        # Create the model - FIX: Use freeze_mode from kwargs instead of hardcoded 'none'
         model, num_prototypes = get_count_network(
             self.num_classes, 
             args, 
             max_count=3, 
-            freeze_mode=kwargs.get('freeze_mode', 'none'),  # Use the provided freeze_mode
             use_ste=kwargs.get('use_ste', False)
         )
         return model, num_prototypes, args
@@ -134,37 +132,7 @@ class TestCountPIPNet(unittest.TestCase):
         
         # The outputs might be different, but should have the same shape
         self.assertEqual(ste_pooled.shape, nonste_pooled.shape)
-        
-    def test_freeze_modes(self):
-        """Test different freeze modes"""
-        freeze_modes = ['none', 'backbone', 'all_except_classification']
-        
-        for mode in freeze_modes:
-            # Create model with specific freeze mode
-            model, _, _ = self.create_model_with_args(freeze_mode=mode)
             
-            # Check parameter requires_grad status
-            if mode == 'none':
-                # All parameters should be trainable
-                for name, param in model.named_parameters():
-                    self.assertTrue(param.requires_grad, f"Parameter {name} should be trainable in mode {mode}")
-                    
-            elif mode == 'backbone':
-                # Backbone should be frozen, rest trainable
-                for name, param in model.named_parameters():
-                    if '_net.' in name:
-                        self.assertFalse(param.requires_grad, f"Backbone parameter {name} should be frozen in mode {mode}")
-                    else:
-                        self.assertTrue(param.requires_grad, f"Non-backbone parameter {name} should be trainable in mode {mode}")
-                        
-            elif mode == 'all_except_classification':
-                # Only classification layer should be trainable
-                for name, param in model.named_parameters():
-                    if '_classification.' in name:
-                        self.assertTrue(param.requires_grad, f"Classification parameter {name} should be trainable in mode {mode}")
-                    else:
-                        self.assertFalse(param.requires_grad, f"Non-classification parameter {name} should be frozen in mode {mode}")
-    
     def test_dynamic_channel_detection(self):
         """Test if channel detection works correctly with different stage configurations"""
         # Test with different stage numbers

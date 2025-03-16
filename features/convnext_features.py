@@ -28,7 +28,7 @@ class MidLayerConvNeXt(nn.Module):
             self.features.add_module('0', original_model.features[0])
             
             # Add the desired number of stages (1-indexed in ConvNeXt)
-            for i in range(min(num_stages, 4)):  # ConvNeXt has 4 stages max
+            for i in range(min(num_stages, len(original_model.features) - 1)):  # ConvNeXt has 4 stages max
                 if i+1 < len(original_model.features):
                     self.features.add_module(str(i+1), original_model.features[i+1])
             
