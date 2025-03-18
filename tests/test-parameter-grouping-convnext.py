@@ -71,7 +71,6 @@ class TestConvNeXtParameterGrouping(unittest.TestCase):
             add_on_layers=add_on_layers,
             classification_layer=classification_layer,
             max_count=3,
-            freeze_mode='none',
             use_ste=False
         )
         

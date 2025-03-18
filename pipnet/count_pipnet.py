@@ -5,9 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 from typing import List, Tuple, Dict, Optional, Union, Callable
-from torch.distributions.relaxed_categorical import RelaxedOneHotCategorical
 
-from .count_pipnet_utils import GumbelSoftmax, StraightThroughEstimator, OneHotEncoder
+from .count_pipnet_utils import GumbelSoftmax, STE_Round, OneHotEncoder
 
 class CountPIPNet(nn.Module):
     """
@@ -23,7 +22,6 @@ class CountPIPNet(nn.Module):
                  add_on_layers: nn.Module,
                  classification_layer: nn.Module,
                  max_count: int = 3,
-                 freeze_mode: str = 'none',
                  use_ste: bool = False):
         """
         Initialize the CountPIPNet model.
@@ -36,15 +34,10 @@ class CountPIPNet(nn.Module):
             add_on_layers: Layers applied after feature extraction
             classification_layer: Final classification layer
             max_count: Maximum count value to consider (counts >= max_count get mapped to max_count)
-            freeze_mode: Freezing strategy - 'none': train all parameters, 
-                                            'backbone': freeze only backbone,
-                                            'all_except_classification': freeze everything except classification layer
             use_ste: Whether to use Straight-Through Estimators for non-differentiable operations
         """
         super().__init__()
         assert num_classes > 0
-        assert freeze_mode in ['none', 'backbone', 'all_except_classification'], \
-            "freeze_mode must be one of ['none', 'backbone', 'all_except_classification']"
             
         self._num_features = args.num_features
         self._num_classes = num_classes
@@ -55,10 +48,9 @@ class CountPIPNet(nn.Module):
         self._max_count = max_count
         self._num_bins = max_count + 1  # +1 for count=0
         self._use_ste = use_ste
-        self._freeze_mode = freeze_mode
         
         # STE function for rounding (only used if use_ste=True)
-        self.ste_round = StraightThroughEstimator.apply
+        self.ste_round = STE_Round.apply
         
         # Create unified one-hot encoder (handles both normal and STE modes)
         self.onehot_encoder = OneHotEncoder(self._num_bins, use_ste=use_ste)
@@ -104,8 +96,11 @@ class CountPIPNet(nn.Module):
         # Apply classification layer
         out = self._classification(flattened_counts)  # [batch_size, num_classes]
         
-        # Return intermediate representations for interpretability
-        return proto_features, flattened_counts, out
+        # In inference mode, return flattened_counts for interpretability
+        if inference:
+            return proto_features, flattened_counts, out
+        # In training, return counts for input to L_T loss term
+        return proto_features, counts, out
     
     def update_temperature(self, current_epoch, total_epochs):
         """
@@ -182,7 +177,7 @@ class NonNegLinear(nn.Module):
 
 # Cleaner channel detection for get_count_network function
 def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int = 3, 
-                     freeze_mode: str = 'none', use_ste: bool = False):
+                      use_ste: bool = False):
     """
     Create a CountPIPNet model with the specified parameters.
     
@@ -190,9 +185,6 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         num_classes: Number of output classes
         args: Command line arguments
         max_count: Maximum count value to consider
-        freeze_mode: Freezing strategy - 'none': train all parameters, 
-                                        'backbone': freeze only backbone,
-                                        'all_except_classification': freeze everything except classification layer
         use_ste: Whether to use Straight-Through Estimators
         
     Returns:
@@ -250,7 +242,6 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         add_on_layers=add_on_layers,
         classification_layer=classification_layer,
         max_count=max_count,
-        freeze_mode=freeze_mode,
         use_ste=use_ste
     )
     

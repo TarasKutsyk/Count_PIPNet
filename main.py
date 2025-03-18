@@ -1,4 +1,3 @@
-from pipnet.pipnet import PIPNet, get_network
 from util.log import Log
 import torch.nn as nn
 from util.args import get_args, save_args, get_optimizer_nn
@@ -16,6 +15,9 @@ import numpy as np
 from shutil import copy
 import matplotlib.pyplot as plt
 from copy import deepcopy
+
+from pipnet.pipnet import get_pipnet
+from pipnet.count_pipnet import get_count_network
 
 def run_pipnet(args=None):
 
@@ -68,20 +70,17 @@ def run_pipnet(args=None):
         else:
             print("Classes: ", str(classes), flush=True)
     
-    # Create a convolutional network based on arguments and add 1x1 conv layer
-    feature_net, add_on_layers, pool_layer, classification_layer, num_prototypes = get_network(len(classes), args)
-   
-    # Create a PIP-Net
-    net = PIPNet(num_classes=len(classes),
-                    num_prototypes=num_prototypes,
-                    feature_net = feature_net,
-                    args = args,
-                    add_on_layers = add_on_layers,
-                    pool_layer = pool_layer,
-                    classification_layer = classification_layer
-                    )
+    if hasattr(args, 'model') and args.model == 'count_pipnet':
+        net, num_prototypes = get_count_network(
+            num_classes=len(classes), 
+            args=args,
+            max_count=getattr(args, 'max_count', 3),
+            use_ste=getattr(args, 'use_ste', False))
+    else:
+        net, num_prototypes = get_pipnet(len(classes), args)
+
     net = net.to(device=device)
-    net = nn.DataParallel(net, device_ids = device_ids)    
+    net = nn.DataParallel(net, device_ids = device_ids)
     
     optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(net, args)   
 

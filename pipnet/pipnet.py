@@ -28,7 +28,7 @@ class PIPNet(nn.Module):
         self._classification = classification_layer
         self._multiplier = classification_layer.normalization_multiplier
 
-    def forward(self, xs,  inference=False):
+    def forward(self, xs, inference=False):
         features = self._net(xs) 
         proto_features = self._add_on(features)
         pooled = self._pool(proto_features)
@@ -71,18 +71,24 @@ class NonNegLinear(nn.Module):
         return F.linear(input,torch.relu(self.weight), self.bias)
 
 
-def get_network(num_classes: int, args: argparse.Namespace): 
-    features = base_architecture_to_features[args.net](pretrained=not args.disable_pretrained)
-    features_name = str(features).upper()
-    if 'next' in args.net:
-        features_name = str(args.net).upper()
-    if features_name.startswith('RES') or features_name.startswith('CONVNEXT'):
-        first_add_on_layer_in_channels = \
-            [i for i in features.modules() if isinstance(i, nn.Conv2d)][-1].out_channels
+def get_pip_network(num_classes: int, args: argparse.Namespace): 
+    if 'convnext' in args.net:
+        # Get the feature extractor backbone (ConvNeXt only)
+        use_mid_layers = getattr(args, 'use_mid_layers', False)
+        num_stages = getattr(args, 'num_stages', 2)
+        
+        backbone_nn = base_architecture_to_features[args.net](
+            pretrained=not args.disable_pretrained,
+            use_mid_layers=use_mid_layers,
+            num_stages=num_stages)
+    elif 'res' in args.net:
+        backbone_nn = base_architecture_to_features[args.net](pretrained=not args.disable_pretrained)
     else:
         raise Exception('other base architecture NOT implemented')
-    
-    
+        
+    first_add_on_layer_in_channels = \
+        [i for i in backbone_nn.modules() if isinstance(i, nn.Conv2d)][-1].out_channels
+
     if args.num_features == 0:
         num_prototypes = first_add_on_layer_in_channels
         print("Number of prototypes: ", num_prototypes, flush=True)
@@ -106,7 +112,29 @@ def get_network(num_classes: int, args: argparse.Namespace):
     else:
         classification_layer = NonNegLinear(num_prototypes, num_classes, bias=False)
         
-    return features, add_on_layers, pool_layer, classification_layer, num_prototypes
+    return backbone_nn, add_on_layers, pool_layer, classification_layer, num_prototypes
 
-
+def get_pipnet(num_classes: int, args: argparse.Namespace):
+    """
+    Create a complete PIPNet model with the specified parameters.
     
+    Args:
+        num_classes: Number of output classes
+        args: Command line arguments
+        
+    Returns:
+        Tuple of (model, num_prototypes)
+    """
+    feature_net, add_on_layers, pool_layer, classification_layer, num_prototypes = get_pip_network(num_classes, args)
+    
+    model = PIPNet(
+        num_classes=num_classes,
+        num_prototypes=num_prototypes,
+        feature_net=feature_net, 
+        args=args,
+        add_on_layers=add_on_layers,
+        pool_layer=pool_layer,
+        classification_layer=classification_layer
+    )
+    
+    return model, num_prototypes

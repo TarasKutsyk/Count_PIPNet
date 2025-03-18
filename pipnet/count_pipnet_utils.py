@@ -38,7 +38,7 @@ class GumbelSoftmax(nn.Module):
             return F.gumbel_softmax(x, tau=self.tau, hard=True, dim=self.dim)
 
 
-class StraightThroughEstimator(torch.autograd.Function):
+class STE_Round(torch.autograd.Function):
     """
     Straight-Through Estimator for non-differentiable operations.
     In forward pass, rounds values to the nearest integer.
