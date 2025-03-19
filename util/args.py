@@ -122,6 +122,20 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--num_stages', type=int, default=2,
                         help='Number of stages to use when using middle layers')
     
+    parser.add_argument('--model',
+                        type=str,
+                        default='pipnet',
+                        help='Model type to use: "pipnet" (original) or "count_pipnet"')
+    parser.add_argument('--max_count',
+                        type=int,
+                        default=3,
+                        help='Maximum count value to consider for CountPIPNet (counts >= max_count get mapped to max_count)')
+    parser.add_argument('--use_ste',
+                        type=eval,
+                        choices=[True, False],
+                        default=False,
+                        help='Whether to use Straight-Through Estimator for count discretization in CountPIPNet')
+    
     args = parser.parse_args()
     if len(args.log_dir.split('/'))>2:
         if not os.path.exists(args.log_dir):

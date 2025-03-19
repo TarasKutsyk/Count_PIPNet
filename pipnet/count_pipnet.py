@@ -115,7 +115,6 @@ class CountPIPNet(nn.Module):
             if isinstance(module, GumbelSoftmax):
                 # Anneal from 1.0 to 0.1
                 module.tau = max(0.1, 1.0 - 0.9 * (current_epoch / total_epochs))
-                print(f"Updated Gumbel-Softmax temperature to {module.tau:.3f}", flush=True)
                 break
 
 

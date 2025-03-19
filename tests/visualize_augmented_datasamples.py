@@ -14,7 +14,6 @@ Usage:
                                              --max_classes 8
                                              --output_dir ./augmentation_viz
 
-Author: Your Name
 """
 
 import os

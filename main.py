@@ -157,7 +157,18 @@ def run_pipnet(args=None):
         print("\nPretrain Epoch", epoch, "with batch size", trainloader_pretraining.batch_size, flush=True)
         
         # Pretrain prototypes
-        train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, scheduler_net, None, criterion, epoch, args.epochs_pretrain, device, pretrain=True, finetune=False)
+        train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, 
+                                  scheduler_net, None, criterion, epoch, args.epochs_pretrain, device, 
+                                  pretrain=True, finetune=False)
+        
+        # For CountPiPNet anneal the Gumbel-Softmax temperature
+        if hasattr(args, 'model') and args.model == 'count_pipnet':
+            # During pretraining: start with higher temperature, decrease more gradually
+            temp = max(0.3, 1.0 - 0.7 * (epoch / (args.epochs_pretrain * 1.5)))
+            
+            net.module.update_temperature(temp)
+            print(f"Updated Gumbel-Softmax temperature to {temp:.3f}", flush=True)
+
         lrs_pretrain_net+=train_info['lrs_net']
         plt.clf()
         plt.plot(lrs_pretrain_net)
@@ -240,6 +251,15 @@ def run_pipnet(args=None):
                 torch.set_printoptions(profile="default")
 
         train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, scheduler_classifier, criterion, epoch, args.epochs, device, pretrain=False, finetune=finetune)
+
+        # For CountPiPNet anneal the Gumbel-Softmax temperature
+        if hasattr(args, 'model') and args.model == 'count_pipnet':
+            # During full training: continue decreasing to get more discrete assignments
+            temp = max(0.1, 0.3 - 0.2 * (epoch / args.epochs))
+            
+            net.module.update_temperature(temp)
+            print(f"Updated Gumbel-Softmax temperature to {temp:.3f}", flush=True)
+
         lrs_net+=train_info['lrs_net']
         lrs_classifier+=train_info['lrs_class']
         # Evaluate model
