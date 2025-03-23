@@ -48,6 +48,7 @@ class CountPIPNet(nn.Module):
         self._max_count = max_count
         self._num_bins = max_count + 1  # +1 for count=0
         self._use_ste = use_ste
+        self._multiplier = classification_layer.normalization_multiplier
         
         # STE function for rounding (only used if use_ste=True)
         self.ste_round = STE_Round.apply
@@ -77,17 +78,17 @@ class CountPIPNet(nn.Module):
         counts = proto_features.sum(dim=(2, 3))  # [batch_size, num_prototypes]
         
         # During inference, we may want to round to nearest integer for cleaner counts
-        if inference:
-            counts = counts.round()
-        elif self._use_ste:
+        if self._use_ste:
             # During training with STE, we round in forward pass but pass gradients through
-            counts = self.ste_round(counts)
+            rounded_counts = self.ste_round(counts)
+        else:
+            rounded_counts = counts.round()
         
-        # Clamp counts to max value (integrated into one-hot encoding)
+        # Clamp rounded_counts to max value (integrated into one-hot encoding)
         # The encoder automatically clamps values to [0, max_count]
         
-        # Convert counts to one-hot vectors
-        encoded_counts = self.onehot_encoder(counts)  # [batch_size, num_prototypes, num_bins]
+        # Convert rounded_counts to one-hot vectors
+        encoded_counts = self.onehot_encoder(rounded_counts)  # [batch_size, num_prototypes, num_bins]
         
         # Flatten the prototype-count combinations
         # This converts from [batch_size, num_prototypes, num_bins] to [batch_size, num_prototypes * num_bins]
@@ -99,10 +100,10 @@ class CountPIPNet(nn.Module):
         # In inference mode, return flattened_counts for interpretability
         if inference:
             return proto_features, flattened_counts, out
-        # In training, return counts for input to L_T loss term
+        # In training, return original counts for input to L_T loss term
         return proto_features, counts, out
     
-    def update_temperature(self, current_epoch, total_epochs):
+    def update_temperature(self, new_temperature):
         """
         Update the Gumbel-Softmax temperature parameter during training.
         
@@ -113,10 +114,8 @@ class CountPIPNet(nn.Module):
         # Find the Gumbel-Softmax layer
         for module in self._add_on.modules():
             if isinstance(module, GumbelSoftmax):
-                # Anneal from 1.0 to 0.1
-                module.tau = max(0.1, 1.0 - 0.9 * (current_epoch / total_epochs))
+                module.tau = new_temperature
                 break
-
 
 # Base architectures mapping (ConvNeXt only)
 base_architecture_to_features = {
@@ -146,6 +145,7 @@ class NonNegLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.weight = nn.Parameter(torch.empty((out_features, in_features), **factory_kwargs))
+        self.normalization_multiplier = nn.Parameter(torch.ones((1,),requires_grad=True))
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features, **factory_kwargs))
         else:
@@ -205,6 +205,14 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     
     # Determine the number of output channels using the most reliable method
     first_add_on_layer_in_channels = detect_output_channels(features)
+
+    # In get_count_network function
+    activation = getattr(args, 'activation', 'gumbel_softmax')
+
+    if activation == 'softmax':
+        activation_layer = nn.Softmax(dim=1)
+    else:  # Default to gumbel_softmax
+        activation_layer = GumbelSoftmax(dim=1, tau=1.0)
     
     # Determine the number of prototypes
     if args.num_features == 0:
@@ -213,7 +221,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         
         # Use Gumbel-Softmax for better discretization
         add_on_layers = nn.Sequential(
-            GumbelSoftmax(dim=1, tau=1.0)
+            activation_layer
         )
     else:
         num_prototypes = args.num_features
@@ -223,7 +231,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         add_on_layers = nn.Sequential(
             nn.Conv2d(in_channels=first_add_on_layer_in_channels, out_channels=num_prototypes, 
                      kernel_size=1, stride=1, padding=0, bias=True),
-            GumbelSoftmax(dim=1, tau=1.0)
+            activation_layer
         )
     
     # The expanded dimensionality after one-hot encoding of count values

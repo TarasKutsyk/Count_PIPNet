@@ -5,14 +5,19 @@ import numpy as np
 import random
 import torch
 import torch.optim
+import yaml
 
 """
     Utility functions for handling parsed arguments
 
 """
 def get_args() -> argparse.Namespace:
-
     parser = argparse.ArgumentParser('Train a PIP-Net')
+    parser.add_argument('--config',
+                    type=str,
+                    default='',
+                    help='Path to YAML config file')
+
     parser.add_argument('--dataset',
                         type=str,
                         default='CUB-200-2011',
@@ -117,15 +122,24 @@ def get_args() -> argparse.Namespace:
                         type=str,
                         default='./experiments',
                         help='Folder with images that PIP-Net will predict and explain, that are not in the training or test set. E.g. images with 2 objects or OOD image. Images should be in subfolder. E.g. images in ./experiments/images/, and argument --./experiments')
-    parser.add_argument('--use_mid_layers', action='store_true', 
-                        help='Use only middle layers of the backbone')
-    parser.add_argument('--num_stages', type=int, default=2,
-                        help='Number of stages to use when using middle layers')
     
+    parser.add_argument('--pretrained_checkpoints_dir',
+                    type=str,
+                    default='',
+                    help='Directory to search for pretrained checkpoints before using the current log_dir')
+    parser.add_argument('--resume_training',
+                    action='store_true',
+                    help='Resume training from the last checkpoint')
+
+    # New arguments for CountPIPNet  
     parser.add_argument('--model',
                         type=str,
                         default='pipnet',
                         help='Model type to use: "pipnet" (original) or "count_pipnet"')
+    parser.add_argument('--use_mid_layers', action='store_true', 
+                        help='Use only middle layers of the backbone')
+    parser.add_argument('--num_stages', type=int, default=3,
+                        help='Number of stages to use when using middle layers')
     parser.add_argument('--max_count',
                         type=int,
                         default=3,
@@ -134,13 +148,42 @@ def get_args() -> argparse.Namespace:
                         type=eval,
                         choices=[True, False],
                         default=False,
-                        help='Whether to use Straight-Through Estimator for count discretization in CountPIPNet')
+                        help='Whether to use Straight-Through Estimator for full training of CountPiPNet')
+    parser.add_argument(f'--activation',
+                        type=str,
+                        default='gumbel_softmax',
+                        help='Prototype-enforcing function to apply to the backbone feature maps. Can be either softmax or gumbel_softmax (default)')
+    
+    # Parse known args first to get the config file path
+    known_args, _ = parser.parse_known_args()
+    
+    # If config file is provided, load it and update defaults
+    if known_args.config and os.path.exists(known_args.config):
+        with open(known_args.config, 'r') as config_file:
+            config = yaml.safe_load(config_file)
+            print("Using the config parameters as default. The provided command-line arguments will still have precedence if provided.")
+            
+            # Create a map from arg name to option string
+            arg_to_option = {}
+            for action in parser._actions:
+                if action.dest != 'help':  # Skip the help action
+                    arg_to_option[action.dest] = action.dest
+            
+            # Update parser defaults with values from config file
+            config_updates = {}
+            for key, value in config.items():
+                if key in arg_to_option:
+                    config_updates[key] = value
+                else:
+                    print(f"Warning: Config contains unknown parameter '{key}'")
+            
+            if config_updates:
+                parser.set_defaults(**config_updates)
     
     args = parser.parse_args()
     if len(args.log_dir.split('/'))>2:
         if not os.path.exists(args.log_dir):
             os.makedirs(args.log_dir)
-
 
     return args
 
@@ -223,22 +266,24 @@ def get_optimizer_nn(net, args: argparse.Namespace):
             if args.bias:
                 classification_bias.append(param)
     
-    # Create parameter lists for optimizers
+    # Define parameter groups with weight decay only for classification weights
     paramlist_net = [
-            {"params": params_backbone, "lr": args.lr_net, "weight_decay_rate": args.weight_decay},
-            {"params": params_to_freeze, "lr": args.lr_block, "weight_decay_rate": args.weight_decay},
-            {"params": params_to_train, "lr": args.lr_block, "weight_decay_rate": args.weight_decay},
-            {"params": net.module._add_on.parameters(), "lr": args.lr_block*10., "weight_decay_rate": args.weight_decay}]
-            
+        {"params": params_backbone, "lr": args.lr_net, "weight_decay": 0.0},
+        {"params": params_to_freeze, "lr": args.lr_block, "weight_decay": 0.0},
+        {"params": params_to_train, "lr": args.lr_block, "weight_decay": 0.0},
+        {"params": net.module._add_on.parameters(), "lr": args.lr_block*10., "weight_decay": 0.0}
+    ]
+                
+    # Apply weight decay only to classification weights, not to bias
     paramlist_classifier = [
-            {"params": classification_weight, "lr": args.lr, "weight_decay_rate": args.weight_decay},
-            {"params": classification_bias, "lr": args.lr, "weight_decay_rate": 0},
+        {"params": classification_weight, "lr": args.lr, "weight_decay": args.weight_decay},
+        {"params": classification_bias, "lr": args.lr, "weight_decay": 0.0},
     ]
           
     # Create optimizers
     if args.optimizer == 'Adam':
-        optimizer_net = torch.optim.AdamW(paramlist_net, lr=args.lr, weight_decay=args.weight_decay)
-        optimizer_classifier = torch.optim.AdamW(paramlist_classifier, lr=args.lr, weight_decay=args.weight_decay)
+        optimizer_net = torch.optim.AdamW(paramlist_net, lr=args.lr, weight_decay=0.0)
+        optimizer_classifier = torch.optim.AdamW(paramlist_classifier, lr=args.lr, weight_decay=0.0)
         return optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone
     else:
         raise ValueError("this optimizer type is not implemented")

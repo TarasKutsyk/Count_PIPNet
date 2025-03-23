@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from util.log import Log
 from util.func import topk_accuracy
 from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, f1_score
+import einops
 
 @torch.no_grad()
 def eval_pipnet(net,
@@ -20,6 +21,9 @@ def eval_pipnet(net,
     net = net.to(device)
     # Make sure the model is in evaluation mode
     net.eval()
+
+    is_count_pipnet = hasattr(net.module, '_max_count')  # Check if it's a CountPIPNet
+
     # Keep an info dict about the procedure
     info = dict()
     # Build a confusion matrix
@@ -51,17 +55,99 @@ def eval_pipnet(net,
             _, pooled, out = net(xs, inference=True)
             max_out_score, ys_pred = torch.max(out, dim=1)
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)),dim=1),dim=1)
+
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))
-            repeated_weight = net.module._classification.weight.unsqueeze(1).repeat(1,pooled.shape[0],1)
-            sim_scores_anz = torch.count_nonzero(torch.gt(torch.abs(pooled*repeated_weight), 1e-3).float(),dim=2).float()
-            local_size = torch.count_nonzero(torch.gt(torch.relu((pooled*repeated_weight)-1e-3).sum(dim=1), 0.).float(),dim=1).float()
+
+            if is_count_pipnet:
+                # Get the maximum count parameter from the model
+                max_count = net.module._max_count
+                # Calculate the number of actual prototypes (before one-hot encoding expanded them)
+                num_raw_prototypes = pooled.shape[1] // (max_count + 1)
+                
+                # Reshape pooled to recover the original structure before flattening
+                reshaped_pooled = einops.rearrange(
+                    pooled, 
+                    'b (p c) -> b p c', 
+                    p=num_raw_prototypes, 
+                    c=max_count+1
+                ) # [batch_size, num_raw_prototypes, max_count+1]
+                
+                # Skip the zero-count position (index 0) and sum the count indicators
+                count_presence = reshaped_pooled[:, :, 1:].sum(dim=2) # [batch_size, num_raw_prototypes]
+                
+                # Reshape the classification weights to match the prototype-count structure
+                reshaped_weights = einops.rearrange(
+                    net.module._classification.weight,
+                    'classes (p c) -> classes p c',
+                    p=num_raw_prototypes,
+                    c=max_count+1
+                ) # [num_classes, num_raw_prototypes, max_count+1]
+                
+                # Extract weights for non-zero counts and sum them
+                nonzero_weights = reshaped_weights[:, :, 1:].sum(dim=2) # [num_classes, num_raw_prototypes]
+                
+                # Repeat for batch processing
+                repeated_weight = einops.repeat(
+                    nonzero_weights,
+                    'classes p -> classes b p',
+                    b=count_presence.shape[0]
+                ) # [num_classes, batch_size, num_raw_prototypes]
+                
+                # Count significant prototype activations weighted by class importance
+
+                # count_presence*repeated_weight is [num_classes, batch_size, num_raw_prototypes] shaped tensor
+                # indicating how much a given prototype contributes to a given class prediction on a given batch sample
+
+                sim_scores_anz = torch.count_nonzero(torch.gt(count_presence*repeated_weight, 1e-3).float(), dim=2).float()
+                # [num_classes, batch_size] <- how many significant prototype activations exist for each class and image combination.
+                
+                # Count prototypes that contribute to each class decision
+                weighted_contribution = einops.reduce(
+                    torch.relu((count_presence*repeated_weight)-1e-3),
+                    'classes b p -> classes b',
+                    'sum'
+                )
+                local_size = torch.count_nonzero(torch.gt(weighted_contribution, 0.).float(), dim=1).float() 
+                # [num_classes] <- how many images there are in the batch with non-zero evidence for each class 
+                
+                # Count activated prototypes per image (regardless of class)
+                almost_nz = torch.count_nonzero(torch.gt(count_presence, 1e-3).float(), dim=1).float() 
+                # [batch_size] - count of activated prototypes per image
+
+            else: # Original PIPNet code with more comments
+                # Repeat the classification weights for batch processing
+                repeated_weight = net.module._classification.weight.unsqueeze(1).repeat(1,pooled.shape[0],1)
+                # net.module._classification.weight: [num_classes, num_prototypes] - prototype-to-class weights
+                # repeated_weight: [num_classes, batch_size, num_prototypes] - weights repeated for batch
+
+                # Count non-zero prototype activations weighted by class importance
+                sim_scores_anz = torch.count_nonzero(torch.gt(torch.abs(pooled*repeated_weight), 1e-3).float(),dim=2).float()
+                # pooled*repeated_weight: [num_classes, batch_size, num_prototypes] - weighted prototype activations
+                # torch.gt(...): [num_classes, batch_size, num_prototypes] - boolean mask of significant activations
+                # sim_scores_anz: [num_classes, batch_size] - count of significant prototypes per class per image
+
+                # Count prototypes that contribute to each class decision
+                local_size = torch.count_nonzero(torch.gt(torch.relu((pooled*repeated_weight)-1e-3).sum(dim=1), 0.).float(),dim=1).float()
+                # (pooled*repeated_weight).sum(dim=1): [num_classes, batch_size] - summed weighted activations per class
+                # torch.gt(...): [num_classes, batch_size] - boolean mask of classes with significant evidence
+                # local_size: [num_classes] - count of images where each class has significant evidence
+
+                # Count of activated prototypes per image (regardless of class)
+                almost_nz = torch.count_nonzero(torch.gt(torch.abs(pooled), 1e-3).float(),dim=1).float()
+                # torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item()
+                # torch.gt(torch.abs(pooled), 1e-3): [batch_size, num_prototypes] - boolean mask of activated prototypes
+                # almost_nz: [batch_size] - count of activated prototypes per image
+
+            # Extract information from the correct predicted class
+            correct_class_sim_scores_anz = torch.diagonal(torch.index_select(sim_scores_anz, dim=0, index=ys_pred),0)
+            # torch.index_select(sim_scores_anz, dim=0, index=ys_pred): [batch_size, batch_size] 
+            #   - Selects rows from sim_scores_anz corresponding to each image's predicted class
+            # torch.diagonal(..., 0): [batch_size]
+            #   - For each image, gets the count of significant prototypes for its predicted class
+            
             local_size_total += local_size.sum().item()
 
-            
-            correct_class_sim_scores_anz = torch.diagonal(torch.index_select(sim_scores_anz, dim=0, index=ys_pred),0)
-            global_sim_anz += correct_class_sim_scores_anz.sum().item()
-            
-            almost_nz = torch.count_nonzero(torch.gt(torch.abs(pooled), 1e-3).float(),dim=1).float()
+            global_sim_anz += correct_class_sim_scores_anz.sum().item()            
             global_anz += almost_nz.sum().item()
             
             # Update the confusion matrix
@@ -145,148 +231,3 @@ def acc_from_cm(cm: np.ndarray) -> float:
         return 1
     else:
         return correct / total
-
-
-@torch.no_grad()
-# Calculates class-specific threshold for the FPR@X metric. Also calculates threshold for images with correct prediction (currently not used, but can be insightful)
-def get_thresholds(net,
-        test_loader: DataLoader,
-        epoch,
-        device,
-        percentile:float = 95.,
-        log: Log = None,  
-        log_prefix: str = 'log_eval_epochs', 
-        progress_prefix: str = 'Get Thresholds Epoch'
-        ) -> dict:
-    
-    net = net.to(device)
-    # Make sure the model is in evaluation mode
-    net.eval()   
-    
-    outputs_per_class = dict()
-    outputs_per_correct_class = dict()
-    for c in range(net.module._num_classes):
-        outputs_per_class[c] = []
-        outputs_per_correct_class[c] = []
-    # Show progress on progress bar
-    test_iter = tqdm(enumerate(test_loader),
-                        total=len(test_loader),
-                        desc=progress_prefix+' %s Perc %s'%(epoch,percentile),
-                        mininterval=5.,
-                        ncols=0)
-    (xs, ys) = next(iter(test_loader))
-    # Iterate through the test set
-    for i, (xs, ys) in test_iter:
-        xs, ys = xs.to(device), ys.to(device)
-        
-        with torch.no_grad():
-            # Use the model to classify this batch of input data
-            _, pooled, out = net(xs)
-
-            ys_pred = torch.argmax(out, dim=1)
-            for pred in range(len(ys_pred)):
-                outputs_per_class[ys_pred[pred].item()].append(out[pred,:].max().item())
-                if ys_pred[pred].item()==ys[pred].item():
-                    outputs_per_correct_class[ys_pred[pred].item()].append(out[pred,:].max().item())
-        
-        del out
-        del pooled
-        del ys_pred
-
-    class_thresholds = dict()
-    correct_class_thresholds = dict()
-    all_outputs = []
-    all_correct_outputs = []
-    for c in range(net.module._num_classes):
-        if len(outputs_per_class[c])>0:
-            outputs_c = outputs_per_class[c]
-            all_outputs += outputs_c
-            class_thresholds[c] = np.percentile(outputs_c,100-percentile) 
-            
-        if len(outputs_per_correct_class[c])>0:
-            correct_outputs_c = outputs_per_correct_class[c]
-            all_correct_outputs += correct_outputs_c
-            correct_class_thresholds[c] = np.percentile(correct_outputs_c,100-percentile)
-    
-    overall_threshold = np.percentile(all_outputs,100-percentile)
-    overall_correct_threshold = np.percentile(all_correct_outputs,100-percentile)
-    # if class is not predicted there is no threshold. we set it as the minimum value for any other class 
-    mean_ct = np.mean(list(class_thresholds.values()))
-    mean_cct = np.mean(list(correct_class_thresholds.values()))
-    for c in range(net.module._num_classes):
-        if c not in class_thresholds.keys():
-            print(c,"not in class thresholds. Setting to mean threshold", flush=True)
-            class_thresholds[c] = mean_ct
-        if c not in correct_class_thresholds.keys():
-            correct_class_thresholds[c] = mean_cct
-
-    calculated_percentile = 0
-    correctly_classified = 0
-    total = 0
-    for c in range(net.module._num_classes):
-        correctly_classified+=sum(i>class_thresholds[c] for i in outputs_per_class[c])
-        total += len(outputs_per_class[c])
-    calculated_percentile = correctly_classified/total
-
-    if percentile<100:
-        while calculated_percentile < (percentile/100.):
-            class_thresholds.update((x, y*0.999) for x, y in class_thresholds.items())
-            correctly_classified = 0
-            for c in range(net.module._num_classes):
-                correctly_classified+=sum(i>=class_thresholds[c] for i in outputs_per_class[c])
-            calculated_percentile = correctly_classified/total
-
-    return overall_correct_threshold, overall_threshold, correct_class_thresholds, class_thresholds
-
-@torch.no_grad()
-def eval_ood(net,
-        test_loader: DataLoader,
-        epoch,
-        device,
-        threshold, #class specific threshold or overall threshold. single float is overall, list or dict is class specific 
-        progress_prefix: str = 'Get Thresholds Epoch'
-        ) -> dict:
-    
-    net = net.to(device)
-    # Make sure the model is in evaluation mode
-    net.eval()   
- 
-    predicted_as_id = 0
-    seen = 0.
-    abstained = 0
-    # Show progress on progress bar
-    test_iter = tqdm(enumerate(test_loader),
-                        total=len(test_loader),
-                        desc=progress_prefix+' %s'%epoch,
-                        mininterval=5.,
-                        ncols=0)
-    (xs, ys) = next(iter(test_loader))
-    # Iterate through the test set
-    for i, (xs, ys) in test_iter:
-        xs, ys = xs.to(device), ys.to(device)
-        
-        with torch.no_grad():
-            # Use the model to classify this batch of input data
-            _, pooled, out = net(xs)
-            max_out_score, ys_pred = torch.max(out, dim=1)
-            ys_pred = torch.argmax(out, dim=1)
-            abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))
-            for j in range(len(ys_pred)):
-                seen+=1.
-                if isinstance(threshold, dict):
-                    thresholdj = threshold[ys_pred[j].item()]
-                elif isinstance(threshold, float): #overall threshold
-                    thresholdj = threshold
-                else:
-                    raise ValueError("provided threshold should be float or dict", type(threshold))
-                sample_out = out[j,:]
-                
-                if sample_out.max().item() >= thresholdj:
-                    predicted_as_id += 1
-                    
-            del out
-            del pooled
-            del ys_pred
-    print("Samples seen:", seen, "of which predicted as In-Distribution:", predicted_as_id, flush=True)
-    print("PIP-Net abstained from a decision for", abstained.item(), "images", flush=True)
-    return predicted_as_id/seen

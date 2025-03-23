@@ -27,9 +27,9 @@ CONFIG = {
     
     'output_dir': './data/mnist_counting/dataset', # Directory to save the generated images
 
-    'img_size': 224,                            # Size of output images (square)
-    'train_samples_per_class': 200,             # Number of training samples per class
-    'test_samples_per_class': 50,               # Number of test samples per class
+    'img_size': 192,                            # Size of output images (square)
+    'train_samples_per_class': 100,             # Number of training samples per class
+    'test_samples_per_class': 25,               # Number of test samples per class
     'seed': 42,                                 # Random seed for reproducibility
     
     # Object parameters - based on estimated receptive field size
@@ -46,21 +46,10 @@ CONFIG = {
     # Class parameters - each tuple defines a class by (digit, count)
     # This creates a balanced dataset with equal focus on digit identity and count
     'class_definitions': [
-        # Classes with 1 object
-        (1, 1),   # Class 1: One digit '1'
-        (9, 1),   # Class 2: One digit '9'
-        
-        # Classes with 2 objects
-        (1, 2),   # Class 3: Two digits '1'
-        (9, 2),   # Class 4: Two digits '9'
-        
-        # Classes with 3 objects
-        (1, 3),   # Class 5: Three digits '1'
-        (9, 3),   # Class 6: Three digits '9'
-        
-        # Classes with 4 objects
-        (1, 4),   # Class 7: Four digits '1'
-        (9, 4),   # Class 8: Four digits '9'
+        (1, 1),  # One digit '1'
+        (9, 1),  # One digit '9'
+        (1, 3),  # Three digits '1'
+        (9, 3),  # Three digits '9'
     ]
 }
 
@@ -417,9 +406,7 @@ if __name__ == "__main__":
     # Create generator with the configuration
     generator = MNISTCountingGenerator(my_config)
     
-    # Generate a small dataset for testing
-    # Using smaller values for testing; use larger values for real dataset
-    generator.generate_dataset(train_samples_per_class=100, test_samples_per_class=25)
+    generator.generate_dataset()
     
     # Visualize samples and save the visualization
     fig = generator.visualize_samples(num_samples=3)

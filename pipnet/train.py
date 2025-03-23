@@ -5,7 +5,10 @@ import torch.optim
 import torch.utils.data
 import math
 
-def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, scheduler_net, scheduler_classifier, criterion, epoch, nr_epochs, device, pretrain=False, finetune=False, progress_prefix: str = 'Train Epoch'):
+def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, 
+                 scheduler_net, scheduler_classifier, criterion, epoch, nr_epochs, device, 
+                 is_count_pipnet=False, pretrain=False, finetune=False, progress_prefix: str = 'Train Epoch',
+                 apply_counting_loss=False):
 
     # Make sure the model is in train mode
     net.train()
@@ -23,6 +26,21 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
     total_loss = 0.
     total_acc = 0.
 
+    # Store info about the procedure
+    train_info = dict()
+    total_loss = 0.
+    total_acc = 0.
+    
+    # Add trackers for loss components
+    align_loss_raw_total = 0.
+    tanh_loss_raw_total = 0.
+    class_loss_raw_total = 0.
+    align_loss_weighted_total = 0.
+    tanh_loss_weighted_total = 0.
+    class_loss_weighted_total = 0.
+    count_confidence_raw_total = 0.
+    count_confidence_weighted_total = 0.
+
     iters = len(train_loader)
     # Show progress on progress bar. 
     train_iter = tqdm(enumerate(train_loader),
@@ -35,6 +53,7 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
     for name, param in net.named_parameters():
         if param.requires_grad:
             count_param+=1           
+            
     print("Number of parameters that require gradient: ", count_param, flush=True)
 
     if pretrain:
@@ -65,10 +84,34 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
        
         # Perform a forward pass through the network
         proto_features, pooled, out = net(torch.cat([xs1, xs2]))
-        loss, acc = calculate_loss(proto_features, pooled, out, ys, align_pf_weight, t_weight, unif_weight, cl_weight, net.module._classification.normalization_multiplier, pretrain, finetune, criterion, train_iter, print=True, EPS=1e-8)
+         # Extract individual loss components
+        loss, acc, loss_components = calculate_loss(proto_features, pooled, out, ys, 
+                                                   align_pf_weight, t_weight, unif_weight, cl_weight, 
+                                                   net.module._classification.normalization_multiplier, 
+                                                   pretrain, finetune, criterion, train_iter, 
+                                                   is_count_pipnet=is_count_pipnet, print=True, EPS=1e-8,
+                                                   apply_counting_loss=apply_counting_loss)
+        
+        # Accumulate loss components
+        align_loss_raw_total += loss_components['align']
+        tanh_loss_raw_total += loss_components['tanh']
+        class_loss_raw_total += loss_components['class']
+        align_loss_weighted_total += loss_components['align_weighted']
+        tanh_loss_weighted_total += loss_components['tanh_weighted']
+        class_loss_weighted_total += loss_components['class_weighted']
+        count_confidence_raw_total += loss_components['count_confidence']
+        count_confidence_weighted_total += loss_components['count_confidence_weighted']
         
         # Compute the gradient
         loss.backward()
+        
+        if epoch == 1 and i==0:
+            print("Gradient norms:")
+            for name, param in net.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    if grad_norm > 0:
+                        print(f"{name}: {grad_norm}")
 
         if not pretrain:
             optimizer_classifier.step()   
@@ -92,6 +135,25 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
                 net.module._classification.normalization_multiplier.copy_(torch.clamp(net.module._classification.normalization_multiplier.data, min=1.0)) 
                 if net.module._classification.bias is not None:
                     net.module._classification.bias.copy_(torch.clamp(net.module._classification.bias.data, min=0.))  
+
+    # Store average loss components in train_info
+    train_info['align_loss_raw'] = align_loss_raw_total/float(i+1)
+    train_info['tanh_loss_raw'] = tanh_loss_raw_total/float(i+1)
+    train_info['class_loss_raw'] = class_loss_raw_total/float(i+1)
+    train_info['align_loss_weighted'] = align_loss_weighted_total/float(i+1)
+    train_info['tanh_loss_weighted'] = tanh_loss_weighted_total/float(i+1)
+    train_info['class_loss_weighted'] = class_loss_weighted_total/float(i+1)
+    train_info['count_confidence_raw'] = count_confidence_raw_total/float(i+1)
+    train_info['count_confidence_weighted'] = count_confidence_weighted_total/float(i+1)
+    
+    # Add a print statement at the end of the epoch to show loss breakdown
+    print(f"\nEpoch {epoch} loss breakdown:")
+    print(f"  Alignment loss: {train_info['align_loss_raw']:.4f} (raw), {train_info['align_loss_weighted']:.4f} (weighted)")
+    print(f"  Tanh loss: {train_info['tanh_loss_raw']:.4f} (raw), {train_info['tanh_loss_weighted']:.4f} (weighted)")
+    print(f"  Classification loss: {train_info['class_loss_raw']:.4f} (raw), {train_info['class_loss_weighted']:.4f} (weighted)")
+    if is_count_pipnet:
+        print(f"  Count confidence loss: {train_info['count_confidence_raw']:.4f} (raw), {train_info['count_confidence_weighted']:.4f} (weighted)")
+    
     train_info['train_accuracy'] = total_acc/float(i+1)
     train_info['loss'] = total_loss/float(i+1)
     train_info['lrs_net'] = lrs_net
@@ -99,7 +161,9 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier, schedul
     
     return train_info
 
-def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, unif_weight, cl_weight, net_normalization_multiplier, pretrain, finetune, criterion, train_iter, print=True, EPS=1e-10):
+def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, unif_weight, cl_weight, 
+                   net_normalization_multiplier, pretrain, finetune, criterion, train_iter, 
+                   is_count_pipnet=False, print=True, EPS=1e-10, apply_counting_loss=False):
     ys = torch.cat([ys1,ys1])
     pooled1, pooled2 = pooled.chunk(2)
     pf1, pf2 = proto_features.chunk(2)
@@ -108,24 +172,57 @@ def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, 
     embv1 = pf1.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
     
     a_loss_pf = (align_loss(embv1, embv2.detach())+ align_loss(embv2, embv1.detach()))/2.
-    tanh_loss = -(torch.log(torch.tanh(torch.sum(pooled1,dim=0))+EPS).mean() + torch.log(torch.tanh(torch.sum(pooled2,dim=0))+EPS).mean())/2.
 
+    if not is_count_pipnet:
+        tanh_loss = -(torch.log(torch.tanh(torch.sum(pooled1,dim=0))+EPS).mean() + 
+                      torch.log(torch.tanh(torch.sum(pooled2,dim=0))+EPS).mean())/2.
+    else:
+        tanh_loss = -(torch.log(torch.tanh(torch.sum(pooled1,dim=0))+EPS).mean() + 
+                      torch.log(torch.tanh(torch.sum(pooled2,dim=0))+EPS).mean())/2.
+        
+    # Initialize count_confidence_loss as 0.0 by default
+    count_confidence_loss = torch.tensor(0.0, device=pooled1.device)
+    
+    if is_count_pipnet and not finetune:
+        # Calculate how far each count is from the nearest integer
+        count_confidence_loss1 = torch.abs(pooled1 - torch.round(pooled1).detach()).mean()
+        count_confidence_loss2 = torch.abs(pooled2 - torch.round(pooled2).detach()).mean()
+        
+        # Average the loss across both sets of counts
+        count_confidence_loss = (count_confidence_loss1 + count_confidence_loss2) / 2.0
+
+    # Weight for count confidence loss
+    count_confidence_weight = 1.0
+        
+    loss_components = {
+            'align': a_loss_pf.item(),
+            'align_weighted': a_loss_pf.item() * align_pf_weight,
+            'tanh': tanh_loss.item(),
+            'tanh_weighted': tanh_loss.item() * t_weight,
+            'class': 0.0,
+            'class_weighted': 0.0,
+            'count_confidence': count_confidence_loss.item(),
+            'count_confidence_weighted': count_confidence_loss.item() * count_confidence_weight
+        }
+    
     if not finetune:
-        loss = align_pf_weight*a_loss_pf
+        loss = align_pf_weight * a_loss_pf
         loss += t_weight * tanh_loss
+        
+        # Add count confidence loss for CountPIPNet
+        if is_count_pipnet and apply_counting_loss:
+            loss += count_confidence_weight * count_confidence_loss
     
     if not pretrain:
         softmax_inputs = torch.log1p(out**net_normalization_multiplier)
         class_loss = criterion(F.log_softmax((softmax_inputs),dim=1),ys)
+        loss_components['class'] = class_loss.item()
+        loss_components['class_weighted'] = class_loss.item() * cl_weight
         
         if finetune:
-            loss= cl_weight * class_loss
+            loss = cl_weight * class_loss
         else:
-            loss+= cl_weight * class_loss
-    # Our tanh-loss optimizes for uniformity and was sufficient for our experiments. However, if pretraining of the prototypes is not working well for your dataset, you may try to add another uniformity loss from https://www.tongzhouwang.info/hypersphere/ Just uncomment the following three lines
-    # else:
-    #     uni_loss = (uniform_loss(F.normalize(pooled1+EPS,dim=1)) + uniform_loss(F.normalize(pooled2+EPS,dim=1)))/2.
-    #     loss += unif_weight * uni_loss
+            loss += cl_weight * class_loss
 
     acc=0.
     if not pretrain:
@@ -135,16 +232,24 @@ def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, 
     if print: 
         with torch.no_grad():
             if pretrain:
-                train_iter.set_postfix_str(
-                f'L: {loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}',refresh=False)
+                if is_count_pipnet:
+                    train_iter.set_postfix_str(
+                    f'L: {loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, LC:{count_confidence_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}',refresh=False)
+                else:
+                    train_iter.set_postfix_str(
+                    f'L: {loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}',refresh=False)
             else:
                 if finetune:
                     train_iter.set_postfix_str(
                     f'L:{loss.item():.3f},LC:{class_loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}, Ac:{acc:.3f}',refresh=False)
                 else:
-                    train_iter.set_postfix_str(
-                    f'L:{loss.item():.3f},LC:{class_loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}, Ac:{acc:.3f}',refresh=False)            
-    return loss, acc
+                    if is_count_pipnet:
+                        train_iter.set_postfix_str(
+                        f'L:{loss.item():.3f},LC:{class_loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, CC:{count_confidence_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}, Ac:{acc:.3f}',refresh=False)
+                    else:
+                        train_iter.set_postfix_str(
+                        f'L:{loss.item():.3f},LC:{class_loss.item():.3f}, LA:{a_loss_pf.item():.2f}, LT:{tanh_loss.item():.3f}, num_scores>0.1:{torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item():.1f}, Ac:{acc:.3f}',refresh=False)            
+    return loss, acc, loss_components
 
 # Extra uniform loss from https://www.tongzhouwang.info/hypersphere/. Currently not used but you could try adding it if you want. 
 def uniform_loss(x, t=2):

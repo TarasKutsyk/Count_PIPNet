@@ -14,6 +14,7 @@ from pipnet.pipnet import PIPNet, get_pip_network
 from pipnet.count_pipnet import CountPIPNet, get_count_network
 import torch.nn as nn
 
+IMG_SIZE=192
 
 class TestCountPIPNet(unittest.TestCase):
     """
@@ -42,8 +43,8 @@ class TestCountPIPNet(unittest.TestCase):
         self.batch_size = 4  # Batch size for testing
         self.max_count = 3  # Maximum count value
         
-        # Create dummy input of shape [batch_size, 3, 224, 224]
-        self.input = torch.randn(self.batch_size, 3, 224, 224)
+        # Create dummy input of shape [batch_size, 3, IMG_SIZE, IMG_SIZE]
+        self.input = torch.randn(self.batch_size, 3, IMG_SIZE, IMG_SIZE)
         
         # Create the standard models
         self.pipnet, self.num_prototypes = self._create_pipnet()
@@ -169,7 +170,7 @@ class TestCountPIPNet(unittest.TestCase):
         """Test that count values are properly bounded."""
         # Create a specific input where one prototype is highly activated across many patches
         # First create a base input
-        special_input = torch.randn(1, 3, 224, 224)
+        special_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
         
         # Run the model up to the proto_features stage
         with torch.no_grad():
@@ -235,6 +236,7 @@ class TestCountPIPNet(unittest.TestCase):
         # Mid-layer model should have fewer parameters
         self.assertLess(mid_pip_params, full_pip_params)
 
+
     def test_varying_num_stages(self):
         """Test with different numbers of stages for both PIPNet and CountPIPNet."""
         # Test CountPIPNet
@@ -285,7 +287,7 @@ class TestCountPIPNet(unittest.TestCase):
             self.assertIsInstance(count_model, CountPIPNet)
             
             # Create a sample input
-            x = torch.randn(2, 3, 224, 224)
+            x = torch.randn(2, 3, IMG_SIZE, IMG_SIZE)
             
             # Verify forward pass works
             proto_features, pooled, output = count_model(x)
@@ -309,7 +311,7 @@ class TestCountPIPNet(unittest.TestCase):
             self.assertIsInstance(pip_model, PIPNet)
             
             # Create a sample input
-            x = torch.randn(2, 3, 224, 224)
+            x = torch.randn(2, 3, IMG_SIZE, IMG_SIZE)
             
             # Verify forward pass works
             proto_features, pooled, output = pip_model(x)

@@ -40,7 +40,7 @@ def analyze_convnext_stages():
                     pass
     
     # Now test with different stage counts
-    for num_stages in [1, 2, 3, 4]:
+    for num_stages in [1, 2, 3, 4, 5, 6, 7]:
         print("\n" + "="*80)
         print(f"ANALYZING NUM_STAGES = {num_stages}")
         print("="*80)

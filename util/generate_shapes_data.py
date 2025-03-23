@@ -24,9 +24,9 @@ CONFIG = {
     # Directory to save the generated images
     'output_dir': './data/geometric_shapes/dataset',
 
-    'img_size': 224,                          # Size of output images (square)
-    'train_samples_per_class': 200,           # Number of training samples per class
-    'test_samples_per_class': 50,             # Number of test samples per class
+    'img_size': 192,                          # Size of output images (square)
+    'train_samples_per_class': 100,           # Number of training samples per class
+    'test_samples_per_class': 25,             # Number of test samples per class
     'seed': 42,                               # Random seed for reproducibility
     
     # Object parameters - based on estimated receptive field size
@@ -400,6 +400,8 @@ class GeometricShapesGenerator:
             
             # Draw the hexagon using the calculated points
             draw.polygon(points, fill=color, outline=outline_color, width=self.outline_width)
+        else:
+            raise ValueError(f'Unsupported shape type: {shape_type}')
     
     def _get_intersection(self, region1: Tuple[int, int, int, int], 
                          region2: Tuple[int, int, int, int]) -> Optional[Tuple[int, int, int, int]]:
@@ -473,9 +475,7 @@ if __name__ == "__main__":
     # Create generator with the configuration
     generator = GeometricShapesGenerator(my_config)
     
-    # Generate a small dataset for testing
-    # Using smaller values for testing; use larger values for real dataset
-    generator.generate_dataset(train_samples_per_class=100, test_samples_per_class=25)
+    generator.generate_dataset()
     
     # Visualize samples and save the visualization
     fig = generator.visualize_samples(num_samples=3)

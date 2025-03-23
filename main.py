@@ -3,8 +3,9 @@ import torch.nn as nn
 from util.args import get_args, save_args, get_optimizer_nn
 from util.data import get_dataloaders
 from util.func import init_weights_xavier
+from util.checkpoint_manager import CheckpointManager
 from pipnet.train import train_pipnet
-from pipnet.test import eval_pipnet, get_thresholds, eval_ood
+from pipnet.test import eval_pipnet
 from util.eval_cub_csv import eval_prototypes_cub_parts_csv, get_topk_cub, get_proto_patches_cub
 import torch
 from util.vis_pipnet import visualize, visualize_topk
@@ -19,8 +20,30 @@ from copy import deepcopy
 from pipnet.pipnet import get_pipnet
 from pipnet.count_pipnet import get_count_network
 
-def run_pipnet(args=None):
+# Add this at the top of main.py
+import hashlib
+import json
+import os
+import pickle
 
+def get_pretraining_config_hash(args):
+    """Generate a unique identifier for pretraining configuration"""
+    pretraining_params = {
+        'epochs_pretrain': args.epochs_pretrain,
+        'max_count': getattr(args, 'max_count', 3),
+        'use_ste': getattr(args, 'use_ste', False),
+        'use_mid_layers': getattr(args, 'use_mid_layers', False),
+        'num_stages': getattr(args, 'num_stages', 2),
+        'num_features': args.num_features,
+        'activation': getattr(args, 'activation', 'gumbel_softmax'),
+        'net': args.net,
+        'dataset': args.dataset
+    }
+    param_str = json.dumps(pretraining_params, sort_keys=True)
+    config_hash = hashlib.md5(param_str.encode()).hexdigest()[:10]
+    return config_hash, pretraining_params
+
+def run_pipnet(args=None):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     random.seed(args.seed)
@@ -69,14 +92,26 @@ def run_pipnet(args=None):
             print("Classes: ", testloader.dataset.class_to_idx, flush=True)
         else:
             print("Classes: ", str(classes), flush=True)
+
+    # Create checkpoint manager
+    checkpoint_manager = CheckpointManager(args, device)
+    start_epoch = 1
+
+    resume_training = False
+    if hasattr(args, 'resume_training') and args.resume_training:
+        resume_training = True
+
+    use_gumbel_softmax = getattr(args, 'activation', 'gumbel_softmax') == 'gumbel_softmax'
     
     if hasattr(args, 'model') and args.model == 'count_pipnet':
+        is_count_pipnet=True
         net, num_prototypes = get_count_network(
             num_classes=len(classes), 
             args=args,
             max_count=getattr(args, 'max_count', 3),
             use_ste=getattr(args, 'use_ste', False))
     else:
+        is_count_pipnet=False
         net, num_prototypes = get_pipnet(len(classes), args)
 
     net = net.to(device=device)
@@ -84,38 +119,34 @@ def run_pipnet(args=None):
     
     optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(net, args)   
 
-    # Initialize or load model
-    with torch.no_grad():
-        if args.state_dict_dir_net != '':
-            epoch = 0
-            checkpoint = torch.load(args.state_dict_dir_net,map_location=device)
-            net.load_state_dict(checkpoint['model_state_dict'],strict=True) 
-            print("Pretrained network loaded", flush=True)
-            net.module._multiplier.requires_grad = False
-            try:
-                optimizer_net.load_state_dict(checkpoint['optimizer_net_state_dict']) 
-            except:
-                pass
-            if torch.mean(net.module._classification.weight).item() > 1.0 and torch.mean(net.module._classification.weight).item() < 3.0 and torch.count_nonzero(torch.relu(net.module._classification.weight-1e-5)).float().item() > 0.8*(num_prototypes*len(classes)): #assume that the linear classification layer is not yet trained (e.g. when loading a pretrained backbone only)
-                print("We assume that the classification layer is not yet trained. We re-initialize it...", flush=True)
-                torch.nn.init.normal_(net.module._classification.weight, mean=1.0,std=0.1) 
-                torch.nn.init.constant_(net.module._multiplier, val=2.)
-                print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
+    if resume_training:
+        print("Attempting to resume training from last checkpoint", flush=True)
+        resume_info = checkpoint_manager.load_trained_checkpoint(net, optimizer_net, optimizer_classifier)
+        
+        if resume_info['success']:
+            # Skip pretraining if resuming
+            args.epochs_pretrain = 0
+            # Get the starting epoch if available
+            if resume_info['epoch'] is not None:
+                start_epoch = resume_info['epoch'] + 1
+                print(f"Resuming training from epoch {start_epoch}", flush=True)
+            else:
+                print("Resuming training from checkpoint without epoch information", flush=True)
+    
+    # If we're not resuming or resume failed, load pretrained checkpoint or initialize weights
+    if not resume_training or not resume_info.get('success', False):
+        with torch.no_grad():
+            checkpoint_loaded = checkpoint_manager.load_pretrained_checkpoint(net, optimizer_net)
+            
+            if not checkpoint_loaded:
+                # Initialize weights
+                net.module._add_on.apply(init_weights_xavier)
+                torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
                 if args.bias:
                     torch.nn.init.constant_(net.module._classification.bias, val=0.)
-            # else: #uncomment these lines if you want to load the optimizer too
-            #     if 'optimizer_classifier_state_dict' in checkpoint.keys():
-            #         optimizer_classifier.load_state_dict(checkpoint['optimizer_classifier_state_dict'])
-            
-        else:
-            net.module._add_on.apply(init_weights_xavier)
-            torch.nn.init.normal_(net.module._classification.weight, mean=1.0,std=0.1) 
-            if args.bias:
-                torch.nn.init.constant_(net.module._classification.bias, val=0.)
-            torch.nn.init.constant_(net.module._multiplier, val=2.)
-            net.module._multiplier.requires_grad = False
-
-            print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
+                torch.nn.init.constant_(net.module._multiplier, val=4.)
+                net.module._multiplier.requires_grad = False
+                print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
     
     # Define classification loss function and scheduler
     criterion = nn.NLLLoss(reduction='mean').to(device)
@@ -131,12 +162,19 @@ def run_pipnet(args=None):
         print("Output shape: ", proto_features.shape, flush=True)
     
     if net.module._num_classes == 2:
-        # Create a csv log for storing the test accuracy, F1-score, mean train accuracy and mean loss for each epoch
-        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_f1', 'almost_sim_nonzeros', 'local_size_all_classes','almost_nonzeros_pooled', 'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch')
-        print("Your dataset only has two classes. Is the number of samples per class similar? If the data is imbalanced, we recommend to use the --weighted_loss flag to account for the imbalance.", flush=True)
+        # Create a csv log with additional loss component columns
+        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_f1', 
+                    'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 
+                    'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch',
+                    'align_loss_raw', 'tanh_loss_raw', 'class_loss_raw',
+                    'align_loss_weighted', 'tanh_loss_weighted', 'class_loss_weighted')
     else:
-        # Create a csv log for storing the test accuracy (top 1 and top 5), mean train accuracy and mean loss for each epoch
-        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_top5_acc', 'almost_sim_nonzeros', 'local_size_all_classes','almost_nonzeros_pooled', 'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch')
+        # Create a csv log with additional loss component columns
+        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_top5_acc', 
+                    'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 
+                    'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch',
+                    'align_loss_raw', 'tanh_loss_raw', 'class_loss_raw',
+                    'align_loss_weighted', 'tanh_loss_weighted', 'class_loss_weighted')
     
     
     lrs_pretrain_net = []
@@ -159,33 +197,54 @@ def run_pipnet(args=None):
         # Pretrain prototypes
         train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, 
                                   scheduler_net, None, criterion, epoch, args.epochs_pretrain, device, 
-                                  pretrain=True, finetune=False)
+                                  is_count_pipnet=is_count_pipnet, pretrain=True, finetune=False,
+                                  apply_counting_loss=not use_gumbel_softmax)
         
         # For CountPiPNet anneal the Gumbel-Softmax temperature
-        if hasattr(args, 'model') and args.model == 'count_pipnet':
-            # During pretraining: start with higher temperature, decrease more gradually
-            temp = max(0.3, 1.0 - 0.7 * (epoch / (args.epochs_pretrain * 1.5)))
+        if hasattr(args, 'model') and args.model == 'count_pipnet' and use_gumbel_softmax:
+            # Configuration for temperature annealing
+            start_temp = 1.0
+            final_temp = 0.1 
+            stabilization_epochs = 5  # Number of epochs to hold at final temperature
             
-            net.module.update_temperature(temp)
-            print(f"Updated Gumbel-Softmax temperature to {temp:.3f}", flush=True)
+            # Calculate annealing period
+            annealing_epochs = args.epochs_pretrain - stabilization_epochs
+            
+            # During pretraining
+            if epoch <= args.epochs_pretrain:
+                if epoch <= annealing_epochs:
+                    # Linear decrease from start_temp to final_temp during annealing period
+                    progress = epoch / annealing_epochs
+                    temp = start_temp - (start_temp - final_temp) * progress
+                else:
+                    # Hold at final temperature during stabilization period
+                    temp = final_temp
+                    
+                net.module.update_temperature(temp)
+                print(f"Updated Gumbel-Softmax temperature to {temp:.3f} (Pretraining phase)", flush=True)
 
         lrs_pretrain_net+=train_info['lrs_net']
         plt.clf()
         plt.plot(lrs_pretrain_net)
         plt.savefig(os.path.join(args.log_dir,'lr_pretrain_net.png'))
-        log.log_values('log_epoch_overview', epoch, "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", train_info['loss'])
+
+        log.log_values('log_epoch_overview', epoch, "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", 
+                    train_info['loss'],
+                    train_info['align_loss_raw'], train_info['tanh_loss_raw'], "n.a.",  # Classification loss is n.a.
+                    train_info['align_loss_weighted'], train_info['tanh_loss_weighted'], "n.a.")
     
-    if args.state_dict_dir_net == '':
+    if args.state_dict_dir_net == '' and args.epochs_pretrain > 0:
         net.eval()
-        torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_pretrained'))
-        net.train()
-    with torch.no_grad():
-        if 'convnext' in args.net and args.epochs_pretrain > 0:
-            topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args)
+        checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
+
+    # with torch.no_grad():
+    #     if 'convnext' in args.net and args.epochs_pretrain > 0:
+    #         topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
-    optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(net, args)            
+    if not resume_training or not resume_info['success']:
+        optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(net, args)
     scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_net, T_max=len(trainloader)*args.epochs, eta_min=args.lr_net/100.)
     # scheduler for the classification layer is with restarts, such that the model can re-active zeroed-out prototypes. Hence an intuitive choice. 
     if args.epochs<=30:
@@ -201,45 +260,58 @@ def run_pipnet(args=None):
     lrs_net = []
     lrs_classifier = []
    
-    for epoch in range(1, args.epochs + 1):                      
-        epochs_to_finetune = 3 #during finetuning, only train classification layer and freeze rest. usually done for a few epochs (at least 1, more depends on size of dataset)
+    for epoch in range(1, args.epochs + 1):
+        # Special handling for CountPIPNet without STE
+        count_pipnet_no_ste = (hasattr(args, 'model') and args.model == 'count_pipnet' and 
+                                not getattr(args, 'use_ste', False))
+        
+        # Initial finetuning phase
+        epochs_to_finetune = 3
         if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0 or args.state_dict_dir_net != ''):
-            for param in net.module._add_on.parameters():
+            # Freeze everything except classification layer
+            for param in net.module.parameters():
                 param.requires_grad = False
-            for param in params_to_train:
-                param.requires_grad = False
-            for param in params_to_freeze:
-                param.requires_grad = False
-            for param in params_backbone:
-                param.requires_grad = False
+            for param in net.module._classification.parameters():
+                param.requires_grad = True
             finetune = True
+        else:
+            finetune = False
+            
+            # For CountPIPNet without STE, always keep everything frozen except classification layer
+            if count_pipnet_no_ste:
+                for param in net.module.parameters():
+                    param.requires_grad = False
+                for param in net.module._classification.parameters():
+                    param.requires_grad = True
+                print("\n Epoch", epoch, "CountPIPNet without STE: Training only classification layer", flush=True)
+            # For original PIPNet or CountPIPNet with STE, follow regular unfreezing strategy
+            else:
+                if frozen:
+                    # Unfreeze backbone after freeze_epochs
+                    if epoch > args.freeze_epochs:
+                        for param in net.module._add_on.parameters():
+                            param.requires_grad = True
+                        for param in params_to_freeze:
+                            param.requires_grad = True
+                        for param in params_to_train:
+                            param.requires_grad = True
+                        for param in params_backbone:
+                            param.requires_grad = True
+                        frozen = False
+                    # Keep first layers of backbone frozen, train rest
+                    else:
+                        for param in params_to_freeze:
+                            param.requires_grad = True
+                        for param in net.module._add_on.parameters():
+                            param.requires_grad = True
+                        for param in params_to_train:
+                            param.requires_grad = True
+                        for param in params_backbone:
+                            param.requires_grad = False
         
-        else: 
-            finetune=False          
-            if frozen:
-                # unfreeze backbone
-                if epoch>(args.freeze_epochs):
-                    for param in net.module._add_on.parameters():
-                        param.requires_grad = True
-                    for param in params_to_freeze:
-                        param.requires_grad = True
-                    for param in params_to_train:
-                        param.requires_grad = True
-                    for param in params_backbone:
-                        param.requires_grad = True   
-                    frozen = False
-                # freeze first layers of backbone, train rest
-                else:
-                    for param in params_to_freeze:
-                        param.requires_grad = True #Can be set to False if you want to train fewer layers of backbone
-                    for param in net.module._add_on.parameters():
-                        param.requires_grad = True
-                    for param in params_to_train:
-                        param.requires_grad = True
-                    for param in params_backbone:
-                        param.requires_grad = False
-        
-        print("\n Epoch", epoch, "frozen:", frozen, flush=True)            
+        print("\n Epoch", epoch, 
+            "frozen:", frozen if not count_pipnet_no_ste else "N/A (CountPIPNet without STE)", 
+            flush=True)    
         if (epoch==args.epochs or epoch%30==0) and args.epochs>1:
             # SET SMALL WEIGHTS TO ZERO
             with torch.no_grad():
@@ -250,31 +322,35 @@ def run_pipnet(args=None):
                     print("Classifier bias: ", net.module._classification.bias, flush=True)
                 torch.set_printoptions(profile="default")
 
-        train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, scheduler_classifier, criterion, epoch, args.epochs, device, pretrain=False, finetune=finetune)
+        train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, 
+                                  scheduler_classifier, criterion, epoch, args.epochs, device, 
+                                  is_count_pipnet=is_count_pipnet, pretrain=False, finetune=finetune,
+                                  apply_counting_loss=not use_gumbel_softmax)
 
         # For CountPiPNet anneal the Gumbel-Softmax temperature
-        if hasattr(args, 'model') and args.model == 'count_pipnet':
-            # During full training: continue decreasing to get more discrete assignments
-            temp = max(0.1, 0.3 - 0.2 * (epoch / args.epochs))
+        # if hasattr(args, 'model') and args.model == 'count_pipnet' and not frozen:
+        #     # During full training: continue decreasing to get more discrete assignments
+        #     temp = max(0.1, 0.3 - 0.2 * (epoch / args.epochs))
             
-            net.module.update_temperature(temp)
-            print(f"Updated Gumbel-Softmax temperature to {temp:.3f}", flush=True)
+        #     net.module.update_temperature(temp)
+        #     print(f"Updated Gumbel-Softmax temperature to {temp:.3f}", flush=True)
 
         lrs_net+=train_info['lrs_net']
         lrs_classifier+=train_info['lrs_class']
         # Evaluate model
         eval_info = eval_pipnet(net, testloader, epoch, device, log)
-        log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'], eval_info['top5_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
+        log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'], eval_info['top5_accuracy'], 
+            eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], 
+            eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], 
+            train_info['train_accuracy'], train_info['loss'],
+            train_info['align_loss_raw'], train_info['tanh_loss_raw'], train_info['class_loss_raw'],
+            train_info['align_loss_weighted'], train_info['tanh_loss_weighted'], train_info['class_loss_weighted'])
             
         with torch.no_grad():
-            net.eval()
-            torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained'))
-
-            if epoch%30 == 0:
-                net.eval()
-                torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained_%s'%str(epoch)))            
-        
-            # save learning rate in figure
+            # Save the checkpoint
+            checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch)
+            
+            # Learning rate graphs (keep this part)
             plt.clf()
             plt.plot(lrs_net)
             plt.savefig(os.path.join(args.log_dir,'lr_net.png'))
@@ -283,91 +359,45 @@ def run_pipnet(args=None):
             plt.savefig(os.path.join(args.log_dir,'lr_class.png'))
                 
     net.eval()
-    torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained_last'))
+    checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
 
-    topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
-    # set weights of prototypes that are never really found in projection set to 0
-    set_to_zero = []
-    if topks:
-        for prot in topks.keys():
-            found = False
-            for (i_id, score) in topks[prot]:
-                if score > 0.1:
-                    found = True
-            if not found:
-                torch.nn.init.zeros_(net.module._classification.weight[:,prot])
-                set_to_zero.append(prot)
-        print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)
-        eval_info = eval_pipnet(net, testloader, "notused"+str(args.epochs), device, log)
-        log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['top5_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
+    # topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+    # # set weights of prototypes that are never really found in projection set to 0
+    # set_to_zero = []
+    # if topks:
+    #     for prot in topks.keys():
+    #         found = False
+    #         for (i_id, score) in topks[prot]:
+    #             if score > 0.1:
+    #                 found = True
+    #         if not found:
+    #             torch.nn.init.zeros_(net.module._classification.weight[:,prot])
+    #             set_to_zero.append(prot)
+    #     print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)
+    #     eval_info = eval_pipnet(net, testloader, "notused"+str(args.epochs), device, log)
+    #     log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['top5_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
 
-    print("classifier weights: ", net.module._classification.weight, flush=True)
-    print("Classifier weights nonzero: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)
-    print("Classifier bias: ", net.module._classification.bias, flush=True)
-    # Print weights and relevant prototypes per class
-    for c in range(net.module._classification.weight.shape[0]):
-        relevant_ps = []
-        proto_weights = net.module._classification.weight[c,:]
-        for p in range(net.module._classification.weight.shape[1]):
-            if proto_weights[p]> 1e-3:
-                relevant_ps.append((p, proto_weights[p].item()))
-        if args.validation_size == 0.:
-            print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)],"):","has", len(relevant_ps),"relevant prototypes: ", relevant_ps, flush=True)
-
-    # Evaluate prototype purity        
-    if args.dataset == 'CUB-200-2011':
-        projectset_img0_path = projectloader.dataset.samples[0][0]
-        project_path = os.path.split(os.path.split(projectset_img0_path)[0])[0].split("dataset")[0]
-        parts_loc_path = os.path.join(project_path, "parts/part_locs.txt")
-        parts_name_path = os.path.join(project_path, "parts/parts.txt")
-        imgs_id_path = os.path.join(project_path, "images.txt")
-        cubthreshold = 0.5 
-
-        net.eval()
-        print("\n\nEvaluating cub prototypes for training set", flush=True)        
-        csvfile_topk = get_topk_cub(net, projectloader, 10, 'train_'+str(epoch), device, args)
-        eval_prototypes_cub_parts_csv(csvfile_topk, parts_loc_path, parts_name_path, imgs_id_path, 'train_topk_'+str(epoch), args, log)
+    # print("classifier weights: ", net.module._classification.weight, flush=True)
+    # print("Classifier weights nonzero: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)
+    # print("Classifier bias: ", net.module._classification.bias, flush=True)
+    # # Print weights and relevant prototypes per class
+    # for c in range(net.module._classification.weight.shape[0]):
+    #     relevant_ps = []
+    #     proto_weights = net.module._classification.weight[c,:]
+    #     for p in range(net.module._classification.weight.shape[1]):
+    #         if proto_weights[p]> 1e-3:
+    #             relevant_ps.append((p, proto_weights[p].item()))
+    #     if args.validation_size == 0.:
+    #         print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)],"):","has", len(relevant_ps),"relevant prototypes: ", relevant_ps, flush=True)
         
-        csvfile_all = get_proto_patches_cub(net, projectloader, 'train_all_'+str(epoch), device, args, threshold=cubthreshold)
-        eval_prototypes_cub_parts_csv(csvfile_all, parts_loc_path, parts_name_path, imgs_id_path, 'train_all_thres'+str(cubthreshold)+'_'+str(epoch), args, log)
-        
-        print("\n\nEvaluating cub prototypes for test set", flush=True)
-        csvfile_topk = get_topk_cub(net, test_projectloader, 10, 'test_'+str(epoch), device, args)
-        eval_prototypes_cub_parts_csv(csvfile_topk, parts_loc_path, parts_name_path, imgs_id_path, 'test_topk_'+str(epoch), args, log)
-        cubthreshold = 0.5
-        csvfile_all = get_proto_patches_cub(net, test_projectloader, 'test_'+str(epoch), device, args, threshold=cubthreshold)
-        eval_prototypes_cub_parts_csv(csvfile_all, parts_loc_path, parts_name_path, imgs_id_path, 'test_all_thres'+str(cubthreshold)+'_'+str(epoch), args, log)
-        
-    # visualize predictions 
-    visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
-    testset_img0_path = test_projectloader.dataset.samples[0][0]
-    test_path = os.path.split(os.path.split(testset_img0_path)[0])[0]
-    vis_pred(net, test_path, classes, device, args) 
-    if args.extra_test_image_folder != '':
-        if os.path.exists(args.extra_test_image_folder):   
-            vis_pred_experiments(net, args.extra_test_image_folder, classes, device, args)
-
-
-    # EVALUATE OOD DETECTION
-    ood_datasets = ["CARS", "CUB-200-2011", "pets"]
-    for percent in [95.]:
-        print("\nOOD Evaluation for epoch", epoch,"with percent of", percent, flush=True)
-        _, _, _, class_thresholds = get_thresholds(net, testloader, epoch, device, percent, log)
-        print("Thresholds:", class_thresholds, flush=True)
-        # Evaluate with in-distribution data
-        id_fraction = eval_ood(net, testloader, epoch, device, class_thresholds)
-        print("ID class threshold ID fraction (TPR) with percent",percent,":", id_fraction, flush=True)
-        
-        # Evaluate with out-of-distribution data
-        for ood_dataset in ood_datasets:
-            if ood_dataset != args.dataset:
-                print("\n OOD dataset: ", ood_dataset,flush=True)
-                ood_args = deepcopy(args)
-                ood_args.dataset = ood_dataset
-                _, _, _, _, _,ood_testloader, _, _ = get_dataloaders(ood_args, device)
-                
-                id_fraction = eval_ood(net, ood_testloader, epoch, device, class_thresholds)
-                print(args.dataset, "- OOD", ood_dataset, "class threshold ID fraction (FPR) with percent",percent,":", id_fraction, flush=True)                
+    # # visualize predictions 
+    # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+    # testset_img0_path = test_projectloader.dataset.samples[0][0]
+    # test_path = os.path.split(os.path.split(testset_img0_path)[0])[0]
+    # vis_pred(net, test_path, classes, device, args) 
+    # if args.extra_test_image_folder != '':
+    #     if os.path.exists(args.extra_test_image_folder):   
+    #         vis_pred_experiments(net, args.extra_test_image_folder, classes, device, args)
 
     print("Done!", flush=True)
 
@@ -377,16 +407,52 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(args.seed)
     random.seed(args.seed)
     np.random.seed(args.seed)
-    print_dir = os.path.join(args.log_dir,'out.txt')
-    tqdm_dir = os.path.join(args.log_dir,'tqdm.txt')
+    
+    # Create log directory if it doesn't exist
     if not os.path.isdir(args.log_dir):
-        os.mkdir(args.log_dir)
+        os.makedirs(args.log_dir)
     
-    sys.stdout.close()
-    sys.stderr.close()
-    sys.stdout = open(print_dir, 'w')
-    sys.stderr = open(tqdm_dir, 'w')
-    run_pipnet(args)
+    # Define paths for log files
+    print_dir = os.path.join(args.log_dir, 'out.txt')
+    tqdm_dir = os.path.join(args.log_dir, 'tqdm.txt')
     
-    sys.stdout.close()
-    sys.stderr.close()
+    # Create a custom stream that writes to both console and file
+    class Tee:
+        def __init__(self, stdout, file):
+            self.stdout = stdout
+            self.file = file
+            
+        def write(self, message):
+            self.stdout.write(message)
+            self.file.write(message)
+            
+        def flush(self):
+            self.stdout.flush()
+            self.file.flush()
+    
+    # Save original stdout/stderr
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    
+    # Open log files
+    out_file = open(print_dir, 'w')
+    tqdm_file = open(tqdm_dir, 'w')
+    
+    # Replace stdout/stderr with Tee objects
+    sys.stdout = Tee(original_stdout, out_file)
+    sys.stderr = Tee(original_stderr, tqdm_file)
+    
+    try:
+        run_pipnet(args)
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Restore original stdout/stderr
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        
+        # Close log files
+        out_file.close()
+        tqdm_file.close()

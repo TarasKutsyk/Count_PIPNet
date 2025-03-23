@@ -9,12 +9,12 @@ from util.vis_pipnet import get_img_coordinates
 import matplotlib.pyplot as plt
 import numpy as np
 
-try:
-    import cv2
-    use_opencv = True
-except ImportError:
-    use_opencv = False
-    print("Heatmaps showing where a prototype is found will not be generated because OpenCV is not installed.", flush=True)
+# try:
+#     import cv2
+#     use_opencv = True
+# except ImportError:
+#     use_opencv = False
+#     print("Heatmaps showing where a prototype is found will not be generated because OpenCV is not installed.", flush=True)
 
 def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
     # Make sure the model is in evaluation mode
