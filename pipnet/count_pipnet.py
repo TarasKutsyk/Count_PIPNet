@@ -99,7 +99,7 @@ class CountPIPNet(nn.Module):
         
         # In inference mode, return flattened_counts for interpretability
         if inference:
-            return proto_features, counts, out # currently is the same as in training for prototype visualization
+            return proto_features, flattened_counts, out
         # In training, return original counts for input to L_T loss term
         return proto_features, counts, out
     

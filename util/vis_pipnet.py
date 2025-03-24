@@ -33,6 +33,33 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
     
     patchsize, skip = get_patch_size(args)
 
+    # Add this at the beginning of visualize_topk, after getting a batch
+    with torch.no_grad():
+        xs, ys = next(iter(projectloader))
+        xs, ys = xs.to(device), ys.to(device)
+        
+        if args.model == 'pipnet':
+            pfs, pooled, _ = net(xs, inference=True)
+        else:
+            pfs, pooled, _ = net(xs, inference=False) # CountPiPNet is designed to return raw prototype count during training
+
+            
+        pooled = pooled.squeeze(0)
+        pfs = pfs.squeeze(0)
+        
+        # Print key debug information
+        print(f"Pooled shape: {pooled.shape}, min: {pooled.min().item()}, max: {pooled.max().item()}")
+        print(f"Feature maps shape: {pfs.shape}")
+        print(f"Non-zero pooled values: {(pooled > 0.1).sum().item()} out of {pooled.numel()}")
+        
+        # Show actual pooled values for all prototypes
+        print("Pooled values:", pooled.tolist())
+        
+        # Check prototype relevance
+        c_weights = torch.max(net.module._classification.weight, dim=0)[0]
+        print("Max classification weight per prototype:", c_weights.tolist())
+        print("Prototypes with weight > 1e-3:", (c_weights > 1e-3).sum().item())
+
     imgs = projectloader.dataset.imgs
     
     # Make sure the model is in evaluation mode
@@ -56,7 +83,11 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
 
         with torch.no_grad():
             # Use the model to classify this batch of input data
-            pfs, pooled, _ = net(xs, inference=True)
+            if args.model == 'pipnet':
+                pfs, pooled, _ = net(xs, inference=True)
+            else:
+                pfs, pooled, _ = net(xs, inference=False) # CountPiPNet is designed to return raw prototype count during training
+
             pooled = pooled.squeeze(0) 
             pfs = pfs.squeeze(0) 
 
@@ -108,7 +139,10 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
                         if idx == i:
                             # Use the model to classify this batch of input data
                             with torch.no_grad():
-                                softmaxes, pooled, out = net(xs, inference=True) #softmaxes has shape (1, num_prototypes, W, H)
+                                if args.model == 'pipnet':
+                                    softmaxes, pooled, out = net(xs, inference=True)
+                                else:
+                                    softmaxes, pooled, out = net(xs, inference=False)
                                 outmax = torch.amax(out,dim=1)[0] #shape ([1]) because batch size of projectloader is 1
                                 if outmax.item() == 0.:
                                     abstained+=1
@@ -218,7 +252,11 @@ def visualize(net, projectloader, num_classes, device, foldername, args: argpars
         xs, ys = xs.to(device), ys.to(device)
         # Use the model to classify this batch of input data
         with torch.no_grad():
-            softmaxes, _, out = net(xs, inference=True) 
+            if args.model == 'pipnet':
+                softmaxes, pooled, out = net(xs, inference=True)
+            else:
+                softmaxes, pooled, out = net(xs, inference=False) 
+
 
         max_per_prototype, max_idx_per_prototype = torch.max(softmaxes, dim=0)
         # In PyTorch, images are represented as [channels, height, width]
