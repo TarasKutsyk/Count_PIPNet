@@ -59,7 +59,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
             pfs, pooled, _ = net(xs, inference=True)
             pooled = pooled.squeeze(0) 
             pfs = pfs.squeeze(0) 
-            
+
             for p in range(pooled.shape[0]):
                 c_weight = torch.max(classification_weights[:,p]) 
                 if c_weight > 1e-3:#ignore prototypes that are not relevant to any class
@@ -100,7 +100,9 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
     for i, (xs, ys) in img_iter: #shuffle is false so should lead to same order as in imgs
         if i in alli:
             xs, ys = xs.to(device), ys.to(device)
+            # Fix the image - we know that there's a prototype associated to it
             for p in topks.keys():
+                # Find the associated prototype
                 if p not in prototypes_not_used:
                     for idx, score in topks[p]:
                         if idx == i:
