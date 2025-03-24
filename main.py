@@ -147,6 +147,8 @@ def run_pipnet(args=None):
                 torch.nn.init.constant_(net.module._multiplier, val=4.)
                 net.module._multiplier.requires_grad = False
                 print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
+            else:
+                args.epochs_pretrain = 0
     
     # Define classification loss function and scheduler
     criterion = nn.NLLLoss(reduction='mean').to(device)
