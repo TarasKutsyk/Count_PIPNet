@@ -30,9 +30,9 @@ CONFIG = {
     'seed': 42,                               # Random seed for reproducibility
     
     # Object parameters - based on estimated receptive field size
-    'min_object_size': 24,                    # Minimum size for a shape (pixels)
-    'max_object_size': 32,                    # Maximum size for a shape (pixels)
-    'size_mean': 28,                          # Mean size of objects - based on receptive field estimate
+    'min_object_size': 12,                    # Minimum size for a shape (pixels)
+    'max_object_size': 20,                    # Maximum size for a shape (pixels)
+    'size_mean': 16,                          # Mean size of objects - based on receptive field estimate
     'size_std': 4,                            # Standard deviation of object size
     
     # Difficulty parameters
@@ -49,19 +49,19 @@ CONFIG = {
     'class_definitions': [
         # Classes with 1 object
         ('circle', 1),      # Class 1: One circle
-        ('square', 1),      # Class 2: One square
+        # ('square', 1),      # Class 2: One square
         ('triangle', 1),    # Class 3: One triangle
         ('hexagon', 1),     # Class 4: One hexagon
         
         # Classes with 2 objects
         ('circle', 2),      # Class 5: Two circles
-        ('square', 2),      # Class 6: Two squares
+        # ('square', 2),      # Class 6: Two squares
         ('triangle', 2),    # Class 7: Two triangles
         ('hexagon', 2),     # Class 8: Two hexagons
         
         # Classes with 3 objects
         ('circle', 3),      # Class 9: Three circles
-        ('square', 3),      # Class 10: Three squares
+        # ('square', 3),      # Class 10: Three squares
         ('triangle', 3),    # Class 11: Three triangles
         ('hexagon', 3),     # Class 12: Three hexagons
     ]

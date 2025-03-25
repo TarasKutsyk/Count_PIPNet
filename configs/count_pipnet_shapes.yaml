@@ -2,7 +2,7 @@
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
 dataset: geometric_shapes           # Dataset name as defined in data.py
 
-pretrained_checkpoints_dir: './runs/12_shapes_ste_stage_3_16'
+pretrained_checkpoints_dir: './runs/12_shape'
 resume_training: True
 
 max_count: 3                      # Maximum count value to track; counts >= max_count get mapped to max_count category
@@ -10,10 +10,10 @@ use_ste: True                     # Whether to use Straight-Through Estimator fo
 use_mid_layers: True              # Use only middle layers of the backbone network
 num_stages: 3                     # Number of stages to use when using middle layers
 num_features: 16                   # Number of prototypes (0 = use backbone's output channel count)
-activation: 'softmax'  # Options: 'gumbel_softmax', 'softmax'
+activation: 'gumbel_softmax'  # Options: 'gumbel_softmax', 'softmax'
 
 # Logging and output
-log_dir: ./runs/12_shapes_ste_stage_3_16 # Directory for saving logs and checkpoints
+log_dir: ./runs/12_shapes # Directory for saving logs and checkpoints
 dir_for_saving_images: visualization_results_shapes # Directory for prototype visualizations
 
 # Network architecture
@@ -22,10 +22,10 @@ image_size: 192                    # Input image resolution (height and width)
 disable_pretrained: False         # When False, uses weights pretrained on ImageNet
 
 # Training parameters
-batch_size: 32                    # Batch size for main training phase
-batch_size_pretrain: 80         # Batch size for prototype pretraining phase
-epochs: 50                        # Number of training epochs (main phase)
-epochs_pretrain: 10               # Number of prototype pretraining epochs
+batch_size: 64                    # Batch size for main training phase
+batch_size_pretrain: 128         # Batch size for prototype pretraining phase
+epochs: 20                        # Number of training epochs (main phase)
+epochs_pretrain: 15               # Number of prototype pretraining epochs
 freeze_epochs: 5                 # Number of epochs to keep early backbone layers frozen
 
 # Optimization parameters
@@ -39,7 +39,7 @@ weight_decay: 0.0                 # L2 regularization strength (0.0 = no regular
 validation_size: 0.0              # Fraction of training data to use for validation (0.0 = use separate test set)
 weighted_loss: False              # Whether to weight loss by inverse class frequency
 seed: 1                           # Random seed for reproducibility
-gpu_ids: '0'                      # GPU IDs to use (comma-separated for multiple GPUs)
+gpu_ids: '3'                      # GPU IDs to use (comma-separated for multiple GPUs)
 num_workers: 4                    # Number of CPU threads for data loading
 bias: False                       # Whether to use bias terms in classification layer
 disable_cuda: False               # When True, forces CPU usage even if GPU is available

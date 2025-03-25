@@ -358,11 +358,14 @@ def run_pipnet(args=None):
             plt.clf()
             plt.plot(lrs_classifier)
             plt.savefig(os.path.join(args.log_dir,'lr_class.png'))
-                
+    
     net.eval()
-    checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
+    if args.epochs > 1:
+        checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
 
-    # topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+    topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+    visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+
     # # set weights of prototypes that are never really found in projection set to 0
     # set_to_zero = []
     # if topks:
@@ -391,8 +394,7 @@ def run_pipnet(args=None):
     #     if args.validation_size == 0.:
     #         print("Class", c, "(", list(testloader.dataset.class_to_idx.keys())[list(testloader.dataset.class_to_idx.values()).index(c)],"):","has", len(relevant_ps),"relevant prototypes: ", relevant_ps, flush=True)
         
-    # # visualize predictions 
-    # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+    # visualize predictions 
     # testset_img0_path = test_projectloader.dataset.samples[0][0]
     # test_path = os.path.split(os.path.split(testset_img0_path)[0])[0]
     # vis_pred(net, test_path, classes, device, args) 

@@ -10,90 +10,133 @@ import torchvision
 from util.func import get_patch_size
 import random
 
+def net_forward(xs, net, is_count_pipnet=True):
+    """
+    Performs a forward pass with suitable params depending on which network (pipnet or count_pipnet) is used.
+    """
+    run_in_inference = not is_count_pipnet # for count-pip-net run the model in training mode, for pipnet otherwise
+    with torch.no_grad():
+        pfs, pooled, out = net(xs, inference=run_in_inference)
+
+    return pfs, pooled, out
+
 @torch.no_grad()                    
-def visualize_topk(net, projectloader, num_classes, device, foldername, args: argparse.Namespace, k=10):
+def visualize_topk(net, projectloader, num_classes, device, foldername, 
+                   args: argparse.Namespace, k=10, verbose=True):
+    """Visualize top-k activation patches for each prototype. Works with both PIPNet and CountPIPNet."""
     print("Visualizing prototypes for topk...", flush=True)
     dir = os.path.join(args.log_dir, foldername)
     if not os.path.exists(dir):
         os.makedirs(dir)
-
+    
+    # Setup tracking dictionaries
     near_imgs_dirs = dict()
     seen_max = dict()
     saved = dict()
     saved_ys = dict()
     tensors_per_prototype = dict()
     
-    for p in range(net.module._num_prototypes):
-        near_imgs_dir = os.path.join(dir, str(p))
-        near_imgs_dirs[p]=near_imgs_dir
-        seen_max[p]=0.
-        saved[p]=0
-        saved_ys[p]=[]
-        tensors_per_prototype[p]=[]
+    num_prototypes = net.module._num_prototypes
+    
+    for p in range(num_prototypes):
+        near_imgs_dirs[p] = os.path.join(dir, str(p))
+        seen_max[p] = 0.
+        saved[p] = 0
+        saved_ys[p] = []
+        tensors_per_prototype[p] = []
     
     patchsize, skip = get_patch_size(args)
-
-    # Add this at the beginning of visualize_topk, after getting a batch
-    with torch.no_grad():
-        xs, ys = next(iter(projectloader))
-        xs, ys = xs.to(device), ys.to(device)
-        
-        if args.model == 'pipnet':
-            pfs, pooled, _ = net(xs, inference=True)
-        else:
-            pfs, pooled, _ = net(xs, inference=False) # CountPiPNet is designed to return raw prototype count during training
-
-            
-        pooled = pooled.squeeze(0)
-        pfs = pfs.squeeze(0)
-        
-        # Print key debug information
-        print(f"Pooled shape: {pooled.shape}, min: {pooled.min().item()}, max: {pooled.max().item()}")
-        print(f"Feature maps shape: {pfs.shape}")
-        print(f"Non-zero pooled values: {(pooled > 0.1).sum().item()} out of {pooled.numel()}")
-        
-        # Show actual pooled values for all prototypes
-        print("Pooled values:", pooled.tolist())
-        
-        # Check prototype relevance
-        c_weights = torch.max(net.module._classification.weight, dim=0)[0]
-        print("Max classification weight per prototype:", c_weights.tolist())
-        print("Prototypes with weight > 1e-3:", (c_weights > 1e-3).sum().item())
-
     imgs = projectloader.dataset.imgs
     
     # Make sure the model is in evaluation mode
     net.eval()
     classification_weights = net.module._classification.weight
+    
+    # Detect if using CountPIPNet by checking for _max_count attribute
+    is_count_pipnet = hasattr(net.module, '_max_count')
+
+    # Handle classification weights differently for CountPIPNet
+    if is_count_pipnet:
+        max_count = net.module._max_count
+        num_bins = max_count + 1
+        
+        # If weights are expanded, reshape and process them
+        if classification_weights.shape[1] > num_prototypes:
+            weights_reshaped = classification_weights.reshape(num_classes, num_prototypes, num_bins)
+            # Sum across non-zero counts for each prototype
+            prototype_importance = weights_reshaped[:, :, 1:].sum(dim=2).max(dim=0)[0]
+        else:
+            # Fall back to standard method if weights aren't expanded
+            prototype_importance = torch.max(classification_weights, dim=0)[0]
+    else:
+        # Original PIPNet - direct mapping
+        prototype_importance = torch.max(classification_weights, dim=0)[0]
+
+
+    if verbose:
+        # Debug information for both model types
+        with torch.no_grad():
+            print(f"Detected model type: {'CountPIPNet' if is_count_pipnet else 'PIPNet'}")
+
+            xs, ys = next(iter(projectloader))
+            xs, ys = xs.to(device), ys.to(device)
+            
+            # Run the model
+            pfs, pooled, out = net_forward(xs, net, is_count_pipnet)
+
+            pooled = pooled.squeeze(0)
+            pfs = pfs.squeeze(0)
+            
+            # Print basic shape information
+            print(f"Pooled shape: {pooled.shape}, min: {pooled.min().item()}, max: {pooled.max().item()}")
+            print(f"Feature maps shape: {pfs.shape}")
+            print(f"Non-zero pooled values: {(pooled > 0.1).sum().item()} out of {pooled.numel()}")
+            
+            # Show pooled values
+            print("Pooled values:", [round(v, 4) for v in pooled.tolist()])
+            
+            # Handle classification weights correctly for both models
+            if is_count_pipnet:
+                if net.module._classification.weight.shape[1] > num_prototypes:
+                    print(f"Classification weights shape: {net.module._classification.weight.shape} (expanded)")
+                else:
+                    print(f"Classification weights shape: {net.module._classification.weight.shape} (not expanded)")
+            else:
+                # Original PIPNet
+                print(f"Classification weights shape: {net.module._classification.weight.shape}")
+            
+            print("Max classification weight per prototype:", [round(v, 4) for v in prototype_importance.tolist()])
+            print("Prototypes with weight > 1e-3:", (prototype_importance > 1e-3).sum().item())
+            
+            # Show which specific prototypes are being used
+            used_protos = torch.where(prototype_importance > 1e-3)[0].tolist()
+            print("Prototype indices with weight > 1e-3:", used_protos)
 
     # Show progress on progress bar
     img_iter = tqdm(enumerate(projectloader),
                     total=len(projectloader),
-                    mininterval=50.,
                     desc='Collecting topk',
                     ncols=0)
 
     # Iterate through the data
     images_seen = 0
     topks = dict()
-    # Iterate through the training set
+    
+    # First pass: collect top-k candidates
     for i, (xs, ys) in img_iter:
-        images_seen+=1
+        images_seen += 1
         xs, ys = xs.to(device), ys.to(device)
 
         with torch.no_grad():
-            # Use the model to classify this batch of input data
-            if args.model == 'pipnet':
-                pfs, pooled, _ = net(xs, inference=True)
-            else:
-                pfs, pooled, _ = net(xs, inference=False) # CountPiPNet is designed to return raw prototype count during training
+            # Use the model to get prototype activations
+            pfs, pooled, out = net_forward(xs, net, is_count_pipnet)
 
             pooled = pooled.squeeze(0) 
             pfs = pfs.squeeze(0) 
-
+            
             for p in range(pooled.shape[0]):
-                c_weight = torch.max(classification_weights[:,p]) 
-                if c_weight > 1e-3:#ignore prototypes that are not relevant to any class
+                # Check if prototype is relevant to any class
+                if prototype_importance[p] > 1e-3:
                     if p not in topks.keys():
                         topks[p] = []
                         
@@ -104,7 +147,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
                         if topks[p][-1][1] < pooled[p].item():
                             topks[p][-1] = (i, pooled[p].item())
                         if topks[p][-1][1] == pooled[p].item():
-                            # equal scores. randomly chose one (since dataset is not shuffled so latter images with same scores can now also get in topk).
+                            # equal scores - randomly choose
                             replace_choice = random.choice([0, 1])
                             if replace_choice > 0:
                                 topks[p][-1] = (i, pooled[p].item())
@@ -139,10 +182,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
                         if idx == i:
                             # Use the model to classify this batch of input data
                             with torch.no_grad():
-                                if args.model == 'pipnet':
-                                    softmaxes, pooled, out = net(xs, inference=True)
-                                else:
-                                    softmaxes, pooled, out = net(xs, inference=False)
+                                softmaxes, pooled, out = net_forward(xs, net, is_count_pipnet)
+                            
                                 outmax = torch.amax(out,dim=1)[0] #shape ([1]) because batch size of projectloader is 1
                                 if outmax.item() == 0.:
                                     abstained+=1
@@ -152,7 +193,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername, args: ar
                             max_per_prototype_h, max_idx_per_prototype_h = torch.max(max_per_prototype, dim=1)
                             max_per_prototype_w, max_idx_per_prototype_w = torch.max(max_per_prototype_h, dim=1) #shape (num_prototypes)
                             
-                            c_weight = torch.max(classification_weights[:,p]) #ignore prototypes that are not relevant to any class
+                            c_weight = prototype_importance[p] #ignore prototypes that are not relevant to any class
                             if (c_weight > 1e-10) or ('pretrain' in foldername):
                                 
                                 h_idx = max_idx_per_prototype_h[p, max_idx_per_prototype_w[p]]
@@ -203,6 +244,8 @@ def visualize(net, projectloader, num_classes, device, foldername, args: argpars
     if not os.path.exists(dir):
         os.makedirs(dir)
 
+    is_count_pipnet = hasattr(net.module, '_max_count')
+
     near_imgs_dirs = dict()
     seen_max = dict()
     saved = dict()
@@ -252,11 +295,7 @@ def visualize(net, projectloader, num_classes, device, foldername, args: argpars
         xs, ys = xs.to(device), ys.to(device)
         # Use the model to classify this batch of input data
         with torch.no_grad():
-            if args.model == 'pipnet':
-                softmaxes, pooled, out = net(xs, inference=True)
-            else:
-                softmaxes, pooled, out = net(xs, inference=False) 
-
+            softmaxes, pooled, out = net_forward(xs, net, is_count_pipnet)
 
         max_per_prototype, max_idx_per_prototype = torch.max(softmaxes, dim=0)
         # In PyTorch, images are represented as [channels, height, width]
