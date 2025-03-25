@@ -22,7 +22,7 @@ def net_forward(xs, net, is_count_pipnet=True):
 
 @torch.no_grad()                    
 def visualize_topk(net, projectloader, num_classes, device, foldername, 
-                   args: argparse.Namespace, k=10, verbose=True):
+                   args: argparse.Namespace, k=10, verbose=True, are_pretraining_prototypes=False):
     """Visualize top-k activation patches for each prototype. Works with both PIPNet and CountPIPNet."""
     print("Visualizing prototypes for topk...", flush=True)
     dir = os.path.join(args.log_dir, foldername)
@@ -72,11 +72,16 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
         # Original PIPNet - direct mapping
         prototype_importance = torch.max(classification_weights, dim=0)[0]
 
+    # When visualizing pretraining prototypes, include all prototypes regardless of weights
+    if are_pretraining_prototypes:
+        # Override prototype_importance with ones so all prototypes pass the threshold check
+        prototype_importance = torch.ones_like(prototype_importance)
 
     if verbose:
         # Debug information for both model types
         with torch.no_grad():
             print(f"Detected model type: {'CountPIPNet' if is_count_pipnet else 'PIPNet'}")
+            print(f"Visualizing {'pretraining' if are_pretraining_prototypes else 'trained'} prototypes")
 
             xs, ys = next(iter(projectloader))
             xs, ys = xs.to(device), ys.to(device)
@@ -105,12 +110,15 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
                 # Original PIPNet
                 print(f"Classification weights shape: {net.module._classification.weight.shape}")
             
-            print("Max classification weight per prototype:", [round(v, 4) for v in prototype_importance.tolist()])
-            print("Prototypes with weight > 1e-3:", (prototype_importance > 1e-3).sum().item())
-            
-            # Show which specific prototypes are being used
-            used_protos = torch.where(prototype_importance > 1e-3)[0].tolist()
-            print("Prototype indices with weight > 1e-3:", used_protos)
+            if not are_pretraining_prototypes:
+                print("Max classification weight per prototype:", [round(v, 4) for v in prototype_importance.tolist()])
+                print("Prototypes with weight > 1e-3:", (prototype_importance > 1e-3).sum().item())
+                
+                # Show which specific prototypes are being used
+                used_protos = torch.where(prototype_importance > 1e-3)[0].tolist()
+                print("Prototype indices with weight > 1e-3:", used_protos)
+            else:
+                print("Visualizing all prototypes (ignoring classification weights during pretraining)")
 
     # Show progress on progress bar
     img_iter = tqdm(enumerate(projectloader),
@@ -135,8 +143,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             pfs = pfs.squeeze(0) 
             
             for p in range(pooled.shape[0]):
-                # Check if prototype is relevant to any class
-                if prototype_importance[p] > 1e-3:
+                # Check if prototype is relevant to any class (skip check for pretraining)
+                if are_pretraining_prototypes or prototype_importance[p] > 1e-3:
                     if p not in topks.keys():
                         topks[p] = []
                         
@@ -193,9 +201,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
                             max_per_prototype_h, max_idx_per_prototype_h = torch.max(max_per_prototype, dim=1)
                             max_per_prototype_w, max_idx_per_prototype_w = torch.max(max_per_prototype_h, dim=1) #shape (num_prototypes)
                             
-                            c_weight = prototype_importance[p] #ignore prototypes that are not relevant to any class
-                            if (c_weight > 1e-10) or ('pretrain' in foldername):
-                                
+                            # For pretraining prototypes, ignore classification weights
+                            if are_pretraining_prototypes or (prototype_importance[p] > 1e-10) or ('pretrain' in foldername):
                                 h_idx = max_idx_per_prototype_h[p, max_idx_per_prototype_w[p]]
                                 w_idx = max_idx_per_prototype_w[p]
                                 

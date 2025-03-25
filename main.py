@@ -240,7 +240,8 @@ def run_pipnet(args=None):
         checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
 
     with torch.no_grad():
-        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args)
+        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
+                               k=10, are_pretraining_prototypes=True)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
@@ -362,9 +363,8 @@ def run_pipnet(args=None):
     net.eval()
     if args.epochs > 1:
         checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
-
-    topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
-    visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+        visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
 
     # # set weights of prototypes that are never really found in projection set to 0
     # set_to_zero = []

@@ -172,24 +172,25 @@ def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, 
     embv1 = pf1.flatten(start_dim=2).permute(0,2,1).flatten(end_dim=1)
     
     a_loss_pf = (align_loss(embv1, embv2.detach())+ align_loss(embv2, embv1.detach()))/2.
-
+    
+    C = 0.01
     if not is_count_pipnet:
-        tanh_loss = -(torch.log(torch.tanh(torch.sum(pooled1,dim=0))+EPS).mean() + 
-                      torch.log(torch.tanh(torch.sum(pooled2,dim=0))+EPS).mean())/2.
+        tanh_loss = -(torch.log(torch.tanh(C * torch.sum(pooled1,dim=0))+EPS).mean() + 
+                      torch.log(torch.tanh(C * torch.sum(pooled2,dim=0))+EPS).mean())/2.
     else:
-        tanh_loss = -(torch.log(torch.tanh(torch.sum(pooled1,dim=0))+EPS).mean() + 
-                      torch.log(torch.tanh(torch.sum(pooled2,dim=0))+EPS).mean())/2.
+        tanh_loss = -(torch.log(torch.tanh(C * torch.sum(pooled1,dim=0))+EPS).mean() + 
+                      torch.log(torch.tanh(C * torch.sum(pooled2,dim=0))+EPS).mean())/2.
         
     # Initialize count_confidence_loss as 0.0 by default
     count_confidence_loss = torch.tensor(0.0, device=pooled1.device)
     
-    if is_count_pipnet and not finetune:
-        # Calculate how far each count is from the nearest integer
-        count_confidence_loss1 = torch.abs(pooled1 - torch.round(pooled1).detach()).mean()
-        count_confidence_loss2 = torch.abs(pooled2 - torch.round(pooled2).detach()).mean()
+    # if is_count_pipnet and not finetune:
+    #     # Calculate how far each count is from the nearest integer
+    #     count_confidence_loss1 = torch.abs(pooled1 - torch.round(pooled1).detach()).mean()
+    #     count_confidence_loss2 = torch.abs(pooled2 - torch.round(pooled2).detach()).mean()
         
-        # Average the loss across both sets of counts
-        count_confidence_loss = (count_confidence_loss1 + count_confidence_loss2) / 2.0
+    #     # Average the loss across both sets of counts
+    #     count_confidence_loss = (count_confidence_loss1 + count_confidence_loss2) / 2.0
 
     # Weight for count confidence loss
     count_confidence_weight = 1.0
