@@ -8,10 +8,8 @@ def get_patch_size(args):
         num_stages = args.num_stages
         if num_stages in [1, 2, 3]:
             patchsize = 16
-        elif num_stages == [4, 5, 6]:
-            patchsize = 24
         else:
-            raise ValueError(f'num_stages should be between 1 and 6, got {num_stages}')
+            patchsize = 32
             
     skip = round((args.image_size - patchsize) / (args.wshape-1))
     return patchsize, skip

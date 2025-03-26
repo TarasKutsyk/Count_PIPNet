@@ -223,7 +223,7 @@ def get_optimizer_nn(net, args: argparse.Namespace):
     
     # Handle different network architectures
     if 'convnext' in args.net:
-        if hasattr(args, 'use_mid_layers') and args.use_mid_layers:
+        if hasattr(args, 'use_mid_layers') and args.use_mid_layers and args.num_stages < 7:
             group_convnext_mid_layer_parameters(
                 net.module._net,
                 params_to_train,

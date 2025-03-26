@@ -184,7 +184,7 @@ def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, 
     # Initialize count_confidence_loss as 0.0 by default
     count_confidence_loss = torch.tensor(0.0, device=pooled1.device)
     
-    # if is_count_pipnet and not finetune:
+    # if is_count_pipnet and apply_counting_loss:
     #     # Calculate how far each count is from the nearest integer
     #     count_confidence_loss1 = torch.abs(pooled1 - torch.round(pooled1).detach()).mean()
     #     count_confidence_loss2 = torch.abs(pooled2 - torch.round(pooled2).detach()).mean()

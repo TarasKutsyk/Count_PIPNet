@@ -3,7 +3,7 @@ model: count_pipnet               # Model type: 'pipnet' for original or 'count_
 dataset: geometric_shapes           # Dataset name as defined in data.py
 
 pretrained_checkpoints_dir: './runs/12_shapes'
-resume_training: True
+resume_training: False
 
 max_count: 3                      # Maximum count value to track; counts >= max_count get mapped to max_count category
 use_ste: True                     # Whether to use Straight-Through Estimator for count discretization during training
@@ -24,7 +24,7 @@ disable_pretrained: False         # When False, uses weights pretrained on Image
 # Training parameters
 batch_size: 64                    # Batch size for main training phase
 batch_size_pretrain: 128         # Batch size for prototype pretraining phase
-epochs: 30                        # Number of training epochs (main phase)
+epochs: 0                        # Number of training epochs (main phase)
 epochs_pretrain: 20               # Number of prototype pretraining epochs
 freeze_epochs: 10                 # Number of epochs to keep early backbone layers frozen
 
