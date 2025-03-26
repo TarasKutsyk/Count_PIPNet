@@ -137,14 +137,29 @@ def run_pipnet(args=None):
             checkpoint_loaded = checkpoint_manager.load_pretrained_checkpoint(net, optimizer_net)
             
             if not checkpoint_loaded:
-                # Initialize weights
-                net.module._add_on.apply(init_weights_xavier)
-                torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
-                if args.bias:
-                    torch.nn.init.constant_(net.module._classification.bias, val=0.)
-                torch.nn.init.constant_(net.module._multiplier, val=4.)
-                net.module._multiplier.requires_grad = False
-                print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
+                # # Initialize classification layer weights with the count-specific initialization
+                # with torch.no_grad():
+                #     if hasattr(net.module, '_max_count'):  # CountPIPNet
+                #         if hasattr(net.module._classification, 'max_count'):
+                #             # For StructuredCountClassifier
+                #             net.module._classification.initialize_count_weights()
+                #         else:
+                #             # For NonNegLinear with flattened representation
+                #             net.module._classification.initialize_count_weights(
+                #                 num_prototypes=net.module._num_prototypes,
+                #                 max_count=net.module._max_count
+                #             )
+                #     else:
+                    # For standard PIPNet
+                    torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
+                    if args.bias:
+                        torch.nn.init.constant_(net.module._classification.bias, val=0.)
+                    
+                    # Initialize the multiplier
+                    torch.nn.init.constant_(net.module._classification.normalization_multiplier, val=2.)
+                    net.module._classification.normalization_multiplier.requires_grad = False
+
+                    print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
             else:
                 args.epochs_pretrain = 0
     
@@ -205,7 +220,7 @@ def run_pipnet(args=None):
             # Configuration for temperature annealing
             start_temp = 1.0
             final_temp = 0.1 
-            stabilization_epochs = int(args.epochs_pretrain * 0.25)  # Number of epochs to hold at final temperature
+            stabilization_epochs = int(args.epochs_pretrain * 0.5)  # Number of epochs to hold at final temperature
             
             # Calculate annealing period
             annealing_epochs = args.epochs_pretrain - stabilization_epochs
@@ -239,7 +254,7 @@ def run_pipnet(args=None):
 
     with torch.no_grad():
         topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                               k=10, are_pretraining_prototypes=True)
+                               k=10, are_pretraining_prototypes=True, plot_histograms=False)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
@@ -318,15 +333,15 @@ def run_pipnet(args=None):
         print("\n Epoch", epoch, 
             "frozen:", frozen if not count_pipnet_no_ste else "N/A (CountPIPNet without STE)", 
             flush=True)    
-        if (epoch==args.epochs or epoch%30==0) and args.epochs>1:
-            # SET SMALL WEIGHTS TO ZERO
-            with torch.no_grad():
-                torch.set_printoptions(profile="full")
-                net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 0.001, min=0.)) 
-                print("Classifier weights: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)
-                if args.bias:
-                    print("Classifier bias: ", net.module._classification.bias, flush=True)
-                torch.set_printoptions(profile="default")
+        # if (epoch==args.epochs or epoch%30==0) and args.epochs>1:
+        #     # SET SMALL WEIGHTS TO ZERO
+        #     with torch.no_grad():
+        #         torch.set_printoptions(profile="full")
+        #         net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 0.001, min=0.)) 
+        #         print("Classifier weights: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)
+        #         if args.bias:
+        #             print("Classifier bias: ", net.module._classification.bias, flush=True)
+        #         torch.set_printoptions(profile="default")
 
         train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, 
                                   scheduler_classifier, criterion, epoch, args.epochs, device, 
@@ -364,10 +379,10 @@ def run_pipnet(args=None):
             plt.plot(lrs_classifier)
             plt.savefig(os.path.join(args.log_dir,'lr_class.png'))
     
-    net.eval()
-    if args.epochs > 1:
-        checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
-        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+    # net.eval()
+    # if args.epochs > 1:
+    #     checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
+    #     topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
         # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
 
     # # set weights of prototypes that are never really found in projection set to 0

@@ -24,13 +24,13 @@ disable_pretrained: False         # When False, uses weights pretrained on Image
 # Training parameters
 batch_size: 64                    # Batch size for main training phase
 batch_size_pretrain: 128         # Batch size for prototype pretraining phase
-epochs: 100                        # Number of training epochs (main phase)
+epochs: 50                        # Number of training epochs (main phase)
 epochs_pretrain: 20               # Number of prototype pretraining epochs
 freeze_epochs: 10                 # Number of epochs to keep early backbone layers frozen
 
 # Optimization parameters
 optimizer: Adam                   # Optimization algorithm for updating weights
-lr: 0.005                         # Learning rate for classification layer
+lr: 0.01                         # Learning rate for classification layer
 lr_block: 0.0005                  # Learning rate for middle backbone layers
 lr_net: 0.0005                    # Learning rate for early backbone layers
 weight_decay: 0.0                 # L2 regularization strength (0.0 = no regularization)

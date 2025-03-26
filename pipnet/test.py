@@ -50,7 +50,7 @@ def eval_pipnet(net,
         xs, ys = xs.to(device), ys.to(device)
         
         with torch.no_grad():
-            net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
+            # net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
             # Use the model to classify this batch of input data
             _, pooled, out = net(xs, inference=True)
             max_out_score, ys_pred = torch.max(out, dim=1)
@@ -61,42 +61,73 @@ def eval_pipnet(net,
             if is_count_pipnet:
                 # Get the maximum count parameter from the model
                 max_count = net.module._max_count
-                # Calculate the number of actual prototypes (before one-hot encoding expanded them)
-                num_raw_prototypes = pooled.shape[1] // max_count
                 
-                # Reshape pooled to recover the original structure before flattening
-                reshaped_pooled = einops.rearrange(
-                    pooled, 
-                    'b (p c) -> b p c', 
-                    p=num_raw_prototypes, 
-                    c=max_count
-                ) # [batch_size, num_raw_prototypes, max_count]
+                # Check if using StructuredCountClassifier
+                using_structured_classifier = hasattr(net.module._classification, 'num_prototypes')
                 
-                count_presence = reshaped_pooled.sum(dim=2) # [batch_size, num_raw_prototypes]
-                
-                # Reshape the classification weights to match the prototype-count structure
-                reshaped_weights = einops.rearrange(
-                    net.module._classification.weight,
-                    'classes (p c) -> classes p c',
-                    p=num_raw_prototypes,
-                    c=max_count
-                ) # [num_classes, num_raw_prototypes, max_count]
-                
-                # Extract weights for non-zero counts and sum them
-                nonzero_weights = reshaped_weights.sum(dim=2) # [num_classes, num_raw_prototypes]
-                
-                # Repeat for batch processing
-                repeated_weight = einops.repeat(
-                    nonzero_weights,
-                    'classes p -> classes b p',
-                    b=count_presence.shape[0]
-                ) # [num_classes, batch_size, num_raw_prototypes]
+                if using_structured_classifier:
+                    # With StructuredCountClassifier, weights already have shape [num_classes, num_prototypes, max_count]
+                    num_raw_prototypes = net.module._num_prototypes
+                    
+                    # No need to reshape pooled if it already has the right structure [batch_size, num_prototypes, max_count]
+                    if len(pooled.shape) == 3 and pooled.shape[2] == max_count:
+                        reshaped_pooled = pooled
+                    else:
+                        # If pooled is flattened, reshape it to recover the structure
+                        reshaped_pooled = einops.rearrange(
+                            pooled, 
+                            'b (p c) -> b p c', 
+                            p=num_raw_prototypes, 
+                            c=max_count
+                        ) # [batch_size, num_raw_prototypes, max_count]
+                    
+                    # Sum across count dimension to get overall presence
+                    count_presence = reshaped_pooled.sum(dim=2) # [batch_size, num_raw_prototypes]
+                    
+                    # Use weights directly from the structured classifier
+                    nonzero_weights = net.module._classification.weight.relu() # [num_classes, num_prototypes, max_count]
+                    nonzero_weights = nonzero_weights.sum(dim=2) # [num_classes, num_raw_prototypes]
+                    
+                    # Repeat for batch processing
+                    repeated_weight = einops.repeat(
+                        nonzero_weights,
+                        'classes p -> classes b p',
+                        b=count_presence.shape[0]
+                    ) # [num_classes, batch_size, num_raw_prototypes]
+                else:
+                    # Original approach with flattened representation
+                    # Calculate the number of actual prototypes (before one-hot encoding expanded them)
+                    num_raw_prototypes = pooled.shape[1] // max_count
+                    
+                    # Reshape pooled to recover the original structure before flattening
+                    reshaped_pooled = einops.rearrange(
+                        pooled, 
+                        'b (p c) -> b p c', 
+                        p=num_raw_prototypes, 
+                        c=max_count
+                    ) # [batch_size, num_raw_prototypes, max_count]
+                    
+                    count_presence = reshaped_pooled.sum(dim=2) # [batch_size, num_raw_prototypes]
+                    
+                    # Reshape the classification weights to match the prototype-count structure
+                    reshaped_weights = einops.rearrange(
+                        net.module._classification.weight,
+                        'classes (p c) -> classes p c',
+                        p=num_raw_prototypes,
+                        c=max_count
+                    ) # [num_classes, num_raw_prototypes, max_count]
+                    
+                    # Extract weights for non-zero counts and sum them
+                    nonzero_weights = reshaped_weights.sum(dim=2) # [num_classes, num_raw_prototypes]
+                    
+                    # Repeat for batch processing
+                    repeated_weight = einops.repeat(
+                        nonzero_weights,
+                        'classes p -> classes b p',
+                        b=count_presence.shape[0]
+                    ) # [num_classes, batch_size, num_raw_prototypes]
                 
                 # Count significant prototype activations weighted by class importance
-
-                # count_presence*repeated_weight is [num_classes, batch_size, num_raw_prototypes] shaped tensor
-                # indicating how much a given prototype contributes to a given class prediction on a given batch sample
-
                 sim_scores_anz = torch.count_nonzero(torch.gt(count_presence*repeated_weight, 1e-3).float(), dim=2).float()
                 # [num_classes, batch_size] <- how many significant prototype activations exist for each class and image combination.
                 
@@ -112,7 +143,6 @@ def eval_pipnet(net,
                 # Count activated prototypes per image (regardless of class)
                 almost_nz = torch.count_nonzero(torch.gt(count_presence, 1e-3).float(), dim=1).float() 
                 # [batch_size] - count of activated prototypes per image
-
             else: # Original PIPNet code with more comments
                 # Repeat the classification weights for batch processing
                 repeated_weight = net.module._classification.weight.unsqueeze(1).repeat(1,pooled.shape[0],1)

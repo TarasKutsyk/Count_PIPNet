@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 from typing import List, Tuple, Dict, Optional, Union, Callable
+from torch.types import Tensor
+import random
 
 from .count_pipnet_utils import GumbelSoftmax, STE_Round, OneHotEncoder
 
@@ -88,13 +90,19 @@ class CountPIPNet(nn.Module):
         
         # Convert rounded_counts to one-hot vectors
         encoded_counts = self.onehot_encoder(rounded_counts)  # [batch_size, num_prototypes, num_bins]
-        
-        # Flatten the prototype-count combinations
-        # This converts from [batch_size, num_prototypes, num_bins] to [batch_size, num_prototypes * num_bins]
         flattened_counts = encoded_counts.reshape(encoded_counts.size(0), -1)
         
-        # Apply classification layer
-        out = self._classification(flattened_counts)  # [batch_size, num_classes]
+        # Flatten for the classifier
+        # Since our classifier now expects [batch_size, num_prototypes, max_count]
+        # we can just pass the encoded_counts directly if the classifier is StructuredCountClassifier
+        # Otherwise, we need to flatten
+        if isinstance(self._classification, StructuredCountClassifier):
+            # The StructuredCountClassifier expects the count dimension to be just max_count (not max_count+1)
+            # Make sure this matches your encoder's output dimension
+            out = self._classification(encoded_counts)
+        else:
+            # Flatten for backwards compatibility with old NonNegLinear
+            out = self._classification(flattened_counts)
         
         # In inference mode, return flattened_counts for interpretability
         if inference:
@@ -123,34 +131,80 @@ base_architecture_to_features = {
 }
 
 class NonNegLinear(nn.Module):
-    """
-    Linear layer with non-negative weights.
-    Ensures that prototype presence can only add positive evidence for a class.
+    """Applies a linear transformation to the incoming data with non-negative weights`
     """
     def __init__(self, in_features: int, out_features: int, bias: bool = True,
                  device=None, dtype=None) -> None:
-        """
-        Initialize non-negative linear layer.
-        
-        Args:
-            in_features: Size of input features
-            out_features: Size of output features
-            bias: Whether to include bias parameters
-            device: Device to place tensor on
-            dtype: Data type of tensor
-        """
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(NonNegLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.weight = nn.Parameter(torch.empty((out_features, in_features), **factory_kwargs))
-        self.normalization_multiplier = nn.Parameter(torch.ones((1,),requires_grad=True))
+        self.normalization_multiplier = nn.Parameter(torch.ones((1,), requires_grad=True))
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features, **factory_kwargs))
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
+        
+    def reset_parameters(self):
+        """Initialize parameters using Kaiming uniform initialization"""
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in)
+            nn.init.uniform_(self.bias, -bound, bound)
+    
+    def initialize_count_weights(self, num_prototypes, max_count):
+        """Initialize weights to prefer one count value per prototype"""
+        if self.in_features != num_prototypes * max_count:
+            raise ValueError(f"Expected in_features to be {num_prototypes * max_count}, got {self.in_features}")
+        
+        with torch.no_grad():
+            # Reset weights to a low value
+            self.weight.fill_(0.1)
+            
+            # For each prototype, randomly select one count value to have higher initial weight
+            for p in range(num_prototypes):
+                # Skip count=0 (which is handled differently in the modified one-hot encoding)
+                best_count = random.randint(1, max_count-1)  # -1 because 0-indexed
+                
+                for c in range(self.out_features):  # for each class
+                    # Compute the index in the flattened weights
+                    idx = p * max_count + best_count
+                    # Set a higher initial weight
+                    self.weight[c, idx] = 1.0
 
+    def forward(self, input: Tensor) -> Tensor:
+        return F.linear(input, torch.relu(self.weight), self.bias)
+    
+class StructuredCountClassifier(nn.Module):
+    """
+    A classification layer that maintains the structure of prototype-count pairs.
+    Weights are organized as [num_classes, num_prototypes, max_count] to explicitly
+    model the relationship between different count values of the same prototype.
+    """
+    def __init__(self, num_prototypes: int, num_classes: int, max_count: int, bias: bool = False,
+                 device=None, dtype=None) -> None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super(StructuredCountClassifier, self).__init__()
+        self.num_prototypes = num_prototypes
+        self.num_classes = num_classes
+        self.max_count = max_count
+        
+        # Create weight parameter with explicit prototype-count structure
+        self.weight = nn.Parameter(torch.empty((num_classes, num_prototypes, max_count), **factory_kwargs))
+        
+        # Normalization multiplier (same as in NonNegLinear)
+        self.normalization_multiplier = nn.Parameter(torch.ones((1,), requires_grad=True))
+        
+        if bias:
+            self.bias = nn.Parameter(torch.empty(num_classes, **factory_kwargs))
+        else:
+            self.register_parameter('bias', None)
+        
+        self.reset_parameters()
+    
     def reset_parameters(self) -> None:
         """Initialize parameters using Kaiming uniform initialization."""
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
@@ -158,20 +212,52 @@ class NonNegLinear(nn.Module):
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
             bound = 1 / math.sqrt(fan_in)
             nn.init.uniform_(self.bias, -bound, bound)
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    
+    def initialize_count_weights(self):
+        """Initialize weights to prefer one count value per prototype"""
+        with torch.no_grad():
+            # Reset weights to a low value
+            self.weight.fill_(0.1)
+            
+            # For each prototype, randomly select one count value to have higher initial weight
+            for p in range(self.num_prototypes):
+                # Skip count=0 (which is handled differently in the modified one-hot encoding)
+                best_count = random.randint(1, self.max_count-1)  # -1 because 0-indexed
+                
+                for c in range(self.num_classes):  # for each class
+                    # Set a higher initial weight for the selected count
+                    self.weight[c, p, best_count] = 1.0
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass of the non-negative linear layer.
-        Applies ReLU to weights to ensure they are non-negative.
+        Forward pass of the structured classification layer.
         
         Args:
-            input: Input tensor [batch_size, in_features]
-            
+            x: Input tensor of shape [batch_size, num_prototypes, max_count]
+                This is the one-hot encoded count representations
+                
         Returns:
-            Output tensor [batch_size, out_features]
+            Output tensor of shape [batch_size, num_classes]
         """
-        return F.linear(input, torch.relu(self.weight), self.bias)
-
+        batch_size = x.shape[0]
+        
+        # Apply non-negative constraint to weights using ReLU
+        non_neg_weight = F.relu(self.weight)
+        
+        # Compute class scores with broadcasting
+        # [batch_size, num_prototypes, max_count] * [num_classes, num_prototypes, max_count]
+        # → [batch_size, num_classes, num_prototypes, max_count]
+        weighted = x.unsqueeze(1) * non_neg_weight.unsqueeze(0)
+        
+        # Sum over prototype and count dimensions
+        # [batch_size, num_classes, num_prototypes, max_count] → [batch_size, num_classes]
+        output = weighted.sum(dim=(2, 3))
+        
+        # Add bias if present
+        if self.bias is not None:
+            output = output + self.bias
+            
+        return output
 
 # Cleaner channel detection for get_count_network function
 def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int = 3, 
@@ -238,6 +324,12 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     
     # Create the classification layer
     classification_layer = NonNegLinear(expanded_dim, num_classes, bias=getattr(args, 'bias', False))
+    # classification_layer = StructuredCountClassifier(
+    #     num_prototypes=num_prototypes,
+    #     num_classes=num_classes,
+    #     max_count=max_count,
+    #     bias=getattr(args, 'bias', False)
+    # )
     
     # Create the full CountPIPNet model
     model = CountPIPNet(
