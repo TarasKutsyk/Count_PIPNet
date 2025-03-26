@@ -46,7 +46,6 @@ class CountPIPNet(nn.Module):
         self._add_on = add_on_layers
         self._classification = classification_layer
         self._max_count = max_count
-        self._num_bins = max_count + 1  # +1 for count=0
         self._use_ste = use_ste
         self._multiplier = classification_layer.normalization_multiplier
         
@@ -54,7 +53,7 @@ class CountPIPNet(nn.Module):
         self.ste_round = STE_Round.apply
         
         # Create unified one-hot encoder (handles both normal and STE modes)
-        self.onehot_encoder = OneHotEncoder(self._num_bins, use_ste=use_ste)
+        self.onehot_encoder = OneHotEncoder(self._max_count, use_ste=use_ste)
     
     def forward(self, xs, inference=False):
         """
@@ -235,7 +234,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         )
     
     # The expanded dimensionality after one-hot encoding of count values
-    expanded_dim = num_prototypes * (max_count + 1)  # +1 for count=0
+    expanded_dim = num_prototypes * max_count
     
     # Create the classification layer
     classification_layer = NonNegLinear(expanded_dim, num_classes, bias=getattr(args, 'bias', False))

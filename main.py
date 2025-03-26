@@ -29,9 +29,7 @@ import pickle
 def get_pretraining_config_hash(args):
     """Generate a unique identifier for pretraining configuration"""
     pretraining_params = {
-        'epochs_pretrain': args.epochs_pretrain,
         'max_count': getattr(args, 'max_count', 3),
-        'use_ste': getattr(args, 'use_ste', False),
         'use_mid_layers': getattr(args, 'use_mid_layers', False),
         'num_stages': getattr(args, 'num_stages', 2),
         'num_features': args.num_features,
@@ -207,7 +205,7 @@ def run_pipnet(args=None):
             # Configuration for temperature annealing
             start_temp = 1.0
             final_temp = 0.1 
-            stabilization_epochs = 5  # Number of epochs to hold at final temperature
+            stabilization_epochs = int(args.epochs_pretrain * 0.25)  # Number of epochs to hold at final temperature
             
             # Calculate annealing period
             annealing_epochs = args.epochs_pretrain - stabilization_epochs
@@ -268,8 +266,11 @@ def run_pipnet(args=None):
                                 not getattr(args, 'use_ste', False))
         
         # Initial finetuning phase
-        epochs_to_finetune = 3
-        if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0 or args.state_dict_dir_net != ''):
+        epochs_to_finetune = int(args.epochs * 0.2)
+        args.freeze_epochs = epochs_to_finetune + int(args.epochs * 0.2)
+        
+        if epoch <= epochs_to_finetune:
+            print(f'Finetuning...')
             # Freeze everything except classification layer
             for param in net.module.parameters():
                 param.requires_grad = False
@@ -278,6 +279,7 @@ def run_pipnet(args=None):
             finetune = True
         else:
             finetune = False
+            print(f'Finetuning ended.')
             
             # For CountPIPNet without STE, always keep everything frozen except classification layer
             if count_pipnet_no_ste:
@@ -300,6 +302,7 @@ def run_pipnet(args=None):
                         for param in params_backbone:
                             param.requires_grad = True
                         frozen = False
+                        print(f'Training everything...')
                     # Keep first layers of backbone frozen, train rest
                     else:
                         for param in params_to_freeze:
@@ -310,6 +313,7 @@ def run_pipnet(args=None):
                             param.requires_grad = True
                         for param in params_backbone:
                             param.requires_grad = False
+                        print(f'Training train + freeze params...')
         
         print("\n Epoch", epoch, 
             "frozen:", frozen if not count_pipnet_no_ste else "N/A (CountPIPNet without STE)", 
@@ -364,7 +368,7 @@ def run_pipnet(args=None):
     if args.epochs > 1:
         checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
         topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
-        visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+        # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
 
     # # set weights of prototypes that are never really found in projection set to 0
     # set_to_zero = []

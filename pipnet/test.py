@@ -62,29 +62,28 @@ def eval_pipnet(net,
                 # Get the maximum count parameter from the model
                 max_count = net.module._max_count
                 # Calculate the number of actual prototypes (before one-hot encoding expanded them)
-                num_raw_prototypes = pooled.shape[1] // (max_count + 1)
+                num_raw_prototypes = pooled.shape[1] // max_count
                 
                 # Reshape pooled to recover the original structure before flattening
                 reshaped_pooled = einops.rearrange(
                     pooled, 
                     'b (p c) -> b p c', 
                     p=num_raw_prototypes, 
-                    c=max_count+1
-                ) # [batch_size, num_raw_prototypes, max_count+1]
+                    c=max_count
+                ) # [batch_size, num_raw_prototypes, max_count]
                 
-                # Skip the zero-count position (index 0) and sum the count indicators
-                count_presence = reshaped_pooled[:, :, 1:].sum(dim=2) # [batch_size, num_raw_prototypes]
+                count_presence = reshaped_pooled.sum(dim=2) # [batch_size, num_raw_prototypes]
                 
                 # Reshape the classification weights to match the prototype-count structure
                 reshaped_weights = einops.rearrange(
                     net.module._classification.weight,
                     'classes (p c) -> classes p c',
                     p=num_raw_prototypes,
-                    c=max_count+1
-                ) # [num_classes, num_raw_prototypes, max_count+1]
+                    c=max_count
+                ) # [num_classes, num_raw_prototypes, max_count]
                 
                 # Extract weights for non-zero counts and sum them
-                nonzero_weights = reshaped_weights[:, :, 1:].sum(dim=2) # [num_classes, num_raw_prototypes]
+                nonzero_weights = reshaped_weights.sum(dim=2) # [num_classes, num_raw_prototypes]
                 
                 # Repeat for batch processing
                 repeated_weight = einops.repeat(

@@ -54,7 +54,7 @@ def create_count_pipnet(num_stages=2):
         GumbelSoftmax(dim=1, tau=1.0)
     )
     
-    expanded_dim = 16 * 4  # max_count + 1 = 3 + 1 = 4
+    expanded_dim = 16 * 3
     classification_layer = NonNegLinear(expanded_dim, 10, bias=False)
     
     model = CountPIPNet(

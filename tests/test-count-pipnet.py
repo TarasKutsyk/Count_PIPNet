@@ -121,7 +121,7 @@ class TestCountPIPNet(unittest.TestCase):
                          "Pooled output shape incorrect for PIPNet")
         
         # Check expanded representation shape for CountPIPNet
-        expected_flattened_shape = (self.batch_size, self.num_prototypes * (self.max_count + 1))
+        expected_flattened_shape = (self.batch_size, self.num_prototypes * self.max_count)
         self.assertEqual(flattened_counts.shape, expected_flattened_shape,
                          f"Flattened counts shape incorrect. Expected {expected_flattened_shape}, got {flattened_counts.shape}")
         
@@ -187,7 +187,7 @@ class TestCountPIPNet(unittest.TestCase):
             encoded_counts = self.count_pipnet.onehot_encoder(counts)
             
             # Check shape of encoded counts
-            expected_shape = (1, self.num_prototypes, self.max_count + 1)
+            expected_shape = (1, self.num_prototypes, self.max_count)
             self.assertEqual(encoded_counts.shape, expected_shape,
                              f"Encoded counts shape incorrect. Expected {expected_shape}, got {encoded_counts.shape}")
             

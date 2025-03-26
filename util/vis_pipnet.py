@@ -64,7 +64,7 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
     
     if is_count_pipnet and classification_weights.shape[1] > num_prototypes:
         # Handle CountPIPNet with expanded weights
-        num_bins_count = max_count + 1
+        num_bins_count = max_count
         
         # Reshape weights from [classes, (protos*counts)] to [classes, protos, counts]
         weights_reshaped = einops.rearrange(
@@ -74,8 +74,7 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
         )
         
         # Sum weights for non-zero counts (1 and above) and take max across classes
-        nonzero_weights = weights_reshaped[:, :, 1:]  # Skip count=0
-        sum_across_counts = torch.sum(nonzero_weights, dim=2)  # Sum across counts
+        sum_across_counts = torch.sum(weights_reshaped, dim=2)  # Sum across counts
         prototype_importance = torch.max(sum_across_counts, dim=0)[0]  # Max across classes
     else:
         # Standard weight handling for PIPNet or simple CountPIPNet
@@ -348,13 +347,13 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
     # Handle classification weights differently for CountPIPNet
     if is_count_pipnet:
         max_count = net.module._max_count
-        num_bins = max_count + 1
+        num_bins = max_count
         
         # If weights are expanded, reshape and process them
         if classification_weights.shape[1] > num_prototypes:
             weights_reshaped = classification_weights.reshape(num_classes, num_prototypes, num_bins)
             # Sum across non-zero counts for each prototype
-            prototype_importance = weights_reshaped[:, :, 1:].sum(dim=2).max(dim=0)[0]
+            prototype_importance = weights_reshaped.sum(dim=2).max(dim=0)[0]
         else:
             # Fall back to standard method if weights aren't expanded
             prototype_importance = torch.max(classification_weights, dim=0)[0]
