@@ -142,7 +142,7 @@ def run_pipnet(args=None):
                 torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
                 if args.bias:
                     torch.nn.init.constant_(net.module._classification.bias, val=0.)
-                torch.nn.init.constant_(net.module._multiplier, val=4.)
+                torch.nn.init.constant_(net.module._multiplier, val=2.)
                 net.module._multiplier.requires_grad = False
                 print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
             else:
@@ -266,8 +266,8 @@ def run_pipnet(args=None):
                                 not getattr(args, 'use_ste', False))
         
         # Initial finetuning phase
-        epochs_to_finetune = int(args.epochs * 0.2)
-        args.freeze_epochs = epochs_to_finetune + int(args.epochs * 0.2)
+        epochs_to_finetune = args.epochs_finetune
+        args.freeze_epochs += epochs_to_finetune
         
         if epoch <= epochs_to_finetune:
             print(f'Finetuning...')

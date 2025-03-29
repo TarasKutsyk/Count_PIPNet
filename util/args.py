@@ -46,6 +46,11 @@ def get_args() -> argparse.Namespace:
                         type=int,
                         default = 10,
                         help='Number of epochs to pre-train the prototypes (first training stage). Recommended to train at least until the align loss < 1'
+                        )         
+    parser.add_argument('--epochs_finetune',
+                        type=int,
+                        default = 20,
+                        help='Number of epochs to finetune the classification layer.'
                         )
     parser.add_argument('--optimizer',
                         type=str,
@@ -153,7 +158,11 @@ def get_args() -> argparse.Namespace:
                         type=str,
                         default='gumbel_softmax',
                         help='Prototype-enforcing function to apply to the backbone feature maps. Can be either softmax or gumbel_softmax (default)')
-    
+    parser.add_argument('--intermediate_layer',
+                    type=str,
+                    default='onehot',
+                    help='Type of intermediate layer to use for CountPIPNet: "onehot" (original) or "linear"')
+
     # Parse known args first to get the config file path
     known_args, _ = parser.parse_known_args()
     

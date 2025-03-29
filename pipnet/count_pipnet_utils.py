@@ -200,47 +200,97 @@ class ModifiedSTEFunction(torch.autograd.Function):
             
             # Now consider neighboring positions' preferences
             
-            # # 1. If count+1 position has positive gradient, we want to increase
-            # # (but only if not already at max)
-            # next_counts = torch.clamp(current_counts + 1, 0, max_count - 1)
-            # can_increase_mask = next_counts != current_counts
+            # 1. If count+1 position has positive gradient, we want to increase
+            # (but only if not already at max)
+            next_counts = torch.clamp(current_counts + 1, 0, max_count - 1)
+            can_increase_mask = next_counts != current_counts
             
-            # if torch.any(can_increase_mask):
-            #     batch_sub = batch_idx_nonzeros[can_increase_mask]
-            #     proto_sub = proto_idx_nonzeros[can_increase_mask]
-            #     next_c = next_counts[can_increase_mask]
+            if torch.any(can_increase_mask):
+                batch_sub = batch_idx_nonzeros[can_increase_mask]
+                proto_sub = proto_idx_nonzeros[can_increase_mask]
+                next_c = next_counts[can_increase_mask]
                 
-            #     # Get gradient at next position
-            #     next_pos_grad = grad_output[batch_sub, proto_sub, next_c]
+                # Get gradient at next position
+                next_pos_grad = grad_output[batch_sub, proto_sub, next_c]
                 
-            #     # Only consider positive preferences for activation
-            #     increase_preference = torch.clamp(next_pos_grad, min=0.0)
+                # Only consider positive preferences for activation
+                increase_preference = torch.clamp(next_pos_grad, min=0.0)
                 
-            #     # Add to final gradient for affected positions
-            #     idx_in_nonzero = torch.where(can_increase_mask)[0]
-            #     final_gradient[idx_in_nonzero] += increase_preference
+                # Add to final gradient for affected positions
+                idx_in_nonzero = torch.where(can_increase_mask)[0]
+                final_gradient[idx_in_nonzero] += increase_preference
             
-            # # 2. If count-1 position has positive gradient, we want to decrease
-            # # (but only if not already at min)
-            # prev_counts = torch.clamp(current_counts - 1, 0, max_count - 1)
-            # can_decrease_mask = prev_counts != current_counts
+            # 2. If count-1 position has positive gradient, we want to decrease
+            # (but only if not already at min)
+            prev_counts = torch.clamp(current_counts - 1, 0, max_count - 1)
+            can_decrease_mask = prev_counts != current_counts
             
-            # if torch.any(can_decrease_mask):
-            #     batch_sub = batch_idx_nonzeros[can_decrease_mask]
-            #     proto_sub = proto_idx_nonzeros[can_decrease_mask]
-            #     prev_c = prev_counts[can_decrease_mask]
+            if torch.any(can_decrease_mask):
+                batch_sub = batch_idx_nonzeros[can_decrease_mask]
+                proto_sub = proto_idx_nonzeros[can_decrease_mask]
+                prev_c = prev_counts[can_decrease_mask]
                 
-            #     # Get gradient at previous position
-            #     prev_pos_grad = grad_output[batch_sub, proto_sub, prev_c]
+                # Get gradient at previous position
+                prev_pos_grad = grad_output[batch_sub, proto_sub, prev_c]
                 
-            #     # Only consider positive preferences for activation
-            #     decrease_preference = torch.clamp(prev_pos_grad, min=0.0)
+                # Only consider positive preferences for activation
+                decrease_preference = torch.clamp(prev_pos_grad, min=0.0)
                 
-            #     # Subtract from final gradient for affected positions
-            #     idx_in_nonzero = torch.where(can_decrease_mask)[0]
-            #     final_gradient[idx_in_nonzero] -= decrease_preference
+                # Subtract from final gradient for affected positions
+                idx_in_nonzero = torch.where(can_decrease_mask)[0]
+                final_gradient[idx_in_nonzero] -= decrease_preference
             
             # Assign computed gradients for non-zero counts
             counts_grad[non_zero_mask] = final_gradient
         
         return counts_grad, None
+
+class LinearIntermediate(nn.Module):
+    """
+    A simple linear intermediate layer that maps count values to a higher-dimensional space.
+    This avoids the discretization and potential gradient issues of one-hot encoding.
+    """
+    def __init__(self, num_prototypes, max_count, expansion_factor=None):
+        """
+        Args:
+            num_prototypes: Number of prototypes in the model
+            max_count: Maximum count value to consider
+            expansion_factor: Factor to expand the feature dimension by (defaults to max_count)
+        """
+        super().__init__()
+        self.num_prototypes = num_prototypes
+        self.max_count = max_count
+        self.expansion_factor = max_count if expansion_factor is None else expansion_factor
+        
+        # Create a simple linear layer that maps each prototype's count to expanded dimensions
+        self.linear = nn.Linear(1, self.expansion_factor, bias=False)
+        
+        # Initialize to approximate one-hot behavior for easier comparison
+        # Higher counts activate later dimensions
+        with torch.no_grad():
+            for i in range(self.expansion_factor):
+                # Create a ramp that peaks at count i+1
+                self.linear.weight[i, 0] = (i + 1) / self.max_count
+        
+    def forward(self, x):
+        """
+        Forward pass - maps count values to expanded feature space.
+        
+        Args:
+            x: Input tensor of counts [batch_size, num_prototypes]
+            
+        Returns:
+            Expanded tensor [batch_size, num_prototypes * expansion_factor]
+        """
+        batch_size = x.shape[0]
+        
+        # Reshape for linear layer processing
+        x_reshaped = x.view(batch_size * self.num_prototypes, 1)
+        
+        # Apply linear transformation
+        expanded = self.linear(x_reshaped)
+        
+        # Reshape back to batch format
+        result = expanded.view(batch_size, self.num_prototypes * self.expansion_factor)
+        
+        return result

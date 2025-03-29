@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 from typing import List, Tuple, Dict, Optional, Union, Callable
 
-from .count_pipnet_utils import GumbelSoftmax, STE_Round, OneHotEncoder
+from .count_pipnet_utils import GumbelSoftmax, STE_Round, OneHotEncoder, LinearIntermediate
 
 class CountPIPNet(nn.Module):
     """
@@ -20,6 +20,7 @@ class CountPIPNet(nn.Module):
                  feature_net: nn.Module,
                  args: argparse.Namespace,
                  add_on_layers: nn.Module,
+                 intermediate_layer: nn.Module, 
                  classification_layer: nn.Module,
                  max_count: int = 3,
                  use_ste: bool = False):
@@ -32,6 +33,7 @@ class CountPIPNet(nn.Module):
             feature_net: Backbone network for feature extraction
             args: Command line arguments
             add_on_layers: Layers applied after feature extraction
+            intermediate_layer: Layer that maps counts to classification input
             classification_layer: Final classification layer
             max_count: Maximum count value to consider (counts >= max_count get mapped to max_count)
             use_ste: Whether to use Straight-Through Estimators for non-differentiable operations
@@ -45,6 +47,8 @@ class CountPIPNet(nn.Module):
         self._net = feature_net
         self._add_on = add_on_layers
         self._classification = classification_layer
+        self._intermediate = intermediate_layer
+
         self._max_count = max_count
         self._use_ste = use_ste
         self._multiplier = classification_layer.normalization_multiplier
@@ -52,9 +56,6 @@ class CountPIPNet(nn.Module):
         # STE function for rounding (only used if use_ste=True)
         self.ste_round = STE_Round.apply
         
-        # Create unified one-hot encoder (handles both normal and STE modes)
-        self.onehot_encoder = OneHotEncoder(self._max_count, use_ste=use_ste)
-    
     def forward(self, xs, inference=False):
         """
         Forward pass of CountPIPNet.
@@ -73,7 +74,6 @@ class CountPIPNet(nn.Module):
         proto_features = self._add_on(features)  # [batch_size, num_prototypes, height, width]
         
         # Sum over spatial dimensions to count prototype occurrences
-        # Each position contributes 1 if the prototype is fully active, or a fraction for partial activation
         counts = proto_features.sum(dim=(2, 3))  # [batch_size, num_prototypes]
         
         # During inference, we may want to round to nearest integer for cleaner counts
@@ -81,24 +81,20 @@ class CountPIPNet(nn.Module):
             # During training with STE, we round in forward pass but pass gradients through
             rounded_counts = self.ste_round(counts)
         else:
-            rounded_counts = counts.round()
+            rounded_counts = counts.round() if inference else counts
         
-        # Clamp rounded_counts to max value (integrated into one-hot encoding)
-        # The encoder automatically clamps values to [0, max_count]
+        # Clamp to max_count
+        clamped_counts = torch.clamp(rounded_counts, 0, self._max_count)
         
-        # Convert rounded_counts to one-hot vectors
-        encoded_counts = self.onehot_encoder(rounded_counts)  # [batch_size, num_prototypes, num_bins]
-        
-        # Flatten the prototype-count combinations
-        # This converts from [batch_size, num_prototypes, num_bins] to [batch_size, num_prototypes * num_bins]
-        flattened_counts = encoded_counts.reshape(encoded_counts.size(0), -1)
+        # Process through intermediate layer
+        intermediate_features = self._intermediate(clamped_counts)
         
         # Apply classification layer
-        out = self._classification(flattened_counts)  # [batch_size, num_classes]
+        out = self._classification(intermediate_features)  # [batch_size, num_classes]
         
-        # In inference mode, return flattened_counts for interpretability
+        # In inference mode, return intermediate_features for interpretability
         if inference:
-            return proto_features, flattened_counts, out
+            return proto_features, intermediate_features, out
         # In training, return original counts for input to L_T loss term
         return proto_features, counts, out
     
@@ -202,10 +198,10 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         use_mid_layers=use_mid_layers,
         num_stages=num_stages)
     
-    # Determine the number of output channels using the most reliable method
+    # Determine the number of output channels
     first_add_on_layer_in_channels = detect_output_channels(features)
 
-    # In get_count_network function
+    # Get activation type
     activation = getattr(args, 'activation', 'gumbel_softmax')
 
     if activation == 'softmax':
@@ -233,8 +229,24 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
             activation_layer
         )
     
-    # The expanded dimensionality after one-hot encoding of count values
-    expanded_dim = num_prototypes * max_count
+    # Get intermediate layer type
+    intermediate_type = getattr(args, 'intermediate_layer', 'onehot')
+    
+    # Create the appropriate intermediate layer
+    if intermediate_type == 'linear':
+        # Use linear intermediate layer
+        intermediate_layer = LinearIntermediate(num_prototypes, max_count)
+        expanded_dim = num_prototypes * max_count
+    elif intermediate_type == 'onehot':
+        # Use one-hot encoder (original approach)
+        intermediate_layer = OneHotEncoder(max_count, use_ste=use_ste)
+        expanded_dim = num_prototypes * max_count
+    elif intermediate_type == 'identity':
+        # Identity intermediate layer
+        intermediate_layer = nn.Identity()
+        expanded_dim = num_prototypes
+    else:
+        raise ValueError(f"Unknown intermediate layer type: {intermediate_type}")
     
     # Create the classification layer
     classification_layer = NonNegLinear(expanded_dim, num_classes, bias=getattr(args, 'bias', False))
@@ -247,6 +259,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         args=args,
         add_on_layers=add_on_layers,
         classification_layer=classification_layer,
+        intermediate_layer=intermediate_layer,
         max_count=max_count,
         use_ste=use_ste
     )
