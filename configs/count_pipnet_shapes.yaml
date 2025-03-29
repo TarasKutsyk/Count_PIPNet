@@ -2,19 +2,20 @@
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
 dataset: geometric_shapes           # Dataset name as defined in data.py
 
-pretrained_checkpoints_dir: './runs/12_shapes_stage_7'
+pretrained_checkpoints_dir: './runs/12_shapes_idenity_im'
 resume_training: False
 
 max_count: 3                      # Maximum count value to track; counts >= max_count get mapped to max_count category
 use_ste: True                     # Whether to use Straight-Through Estimator for count discretization during training
 use_mid_layers: True              # Use only middle layers of the backbone network
-num_stages: 7                     # Number of stages to use when using middle layers
+num_stages: 3                     # Number of stages to use when using middle layers
 num_features: 16                   # Number of prototypes (0 = use backbone's output channel count)
 activation: 'gumbel_softmax'  # Options: 'gumbel_softmax', 'softmax'
-intermediate_layer: linear # Options: 'linear', 'onehot'
+intermediate_layer: identity # Options: 'linear', 'onehot', 'bilinear', 'identity'
+enforce_weight_sparsity: True
 
 # Logging and output
-log_dir: ./runs/12_shapes_stage_7 # Directory for saving logs and checkpoints
+log_dir: ./runs/12_shapes_idenity_im # Directory for saving logs and checkpoints
 dir_for_saving_images: visualization_results_shapes # Directory for prototype visualizations
 
 # Network architecture

@@ -198,7 +198,7 @@ def run_pipnet(args=None):
         train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, 
                                   scheduler_net, None, criterion, epoch, args.epochs_pretrain, device, 
                                   is_count_pipnet=is_count_pipnet, pretrain=True, finetune=False,
-                                  apply_counting_loss=not use_gumbel_softmax)
+                                  enforce_weight_sparsity=args.enforce_weight_sparsity)
         
         # For CountPiPNet anneal the Gumbel-Softmax temperature
         if hasattr(args, 'model') and args.model == 'count_pipnet' and use_gumbel_softmax:
@@ -318,8 +318,8 @@ def run_pipnet(args=None):
         print("\n Epoch", epoch, 
             "frozen:", frozen if not count_pipnet_no_ste else "N/A (CountPIPNet without STE)", 
             flush=True)    
-        if (epoch==args.epochs or epoch%30==0) and args.epochs>1:
-            # SET SMALL WEIGHTS TO ZERO
+        if args.enforce_weight_sparsity and (epoch==args.epochs or epoch%30==0) and args.epochs>1:
+            print('(MAIN) Setting small weights to zero')
             with torch.no_grad():
                 torch.set_printoptions(profile="full")
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 0.001, min=0.)) 
@@ -331,7 +331,7 @@ def run_pipnet(args=None):
         train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, 
                                   scheduler_classifier, criterion, epoch, args.epochs, device, 
                                   is_count_pipnet=is_count_pipnet, pretrain=False, finetune=finetune,
-                                  apply_counting_loss=not use_gumbel_softmax)
+                                  enforce_weight_sparsity=args.enforce_weight_sparsity)
 
         # For CountPiPNet anneal the Gumbel-Softmax temperature
         # if hasattr(args, 'model') and args.model == 'count_pipnet' and not frozen:
@@ -344,7 +344,8 @@ def run_pipnet(args=None):
         lrs_net+=train_info['lrs_net']
         lrs_classifier+=train_info['lrs_class']
         # Evaluate model
-        eval_info = eval_pipnet(net, testloader, epoch, device, log)
+        eval_info = eval_pipnet(net, testloader, epoch, device, log, enforce_weight_sparsity=args.enforce_weight_sparsity,
+                                args=args)
         log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'], eval_info['top5_accuracy'], 
             eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], 
             eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], 
@@ -355,7 +356,11 @@ def run_pipnet(args=None):
         with torch.no_grad():
             # Save the checkpoint
             checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch)
-            
+
+            # Save the best checkpoint if this is the best model so far
+            checkpoint_manager.save_best_checkpoint(net, optimizer_net, optimizer_classifier, 
+                                                    epoch, eval_info['top1_accuracy'])
+                    
             # Learning rate graphs (keep this part)
             plt.clf()
             plt.plot(lrs_net)
@@ -369,6 +374,18 @@ def run_pipnet(args=None):
         checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
         topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
         # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+
+        # Now load and visualize the best model's prototypes
+        print("\nLoading best model for prototype visualization...", flush=True)
+        best_model_info = checkpoint_manager.load_best_checkpoint(net, optimizer_net, optimizer_classifier)
+        if best_model_info['success']:
+            print(f"Loaded best model from epoch {best_model_info['epoch']} with accuracy {best_model_info['accuracy']:.4f} for visualization", flush=True)
+            # Create a dedicated folder for the best model prototypes
+            best_model_folder = f'visualised_prototypes_topk_best_model_epoch{best_model_info["epoch"]}'
+            topks_best = visualize_topk(net, projectloader, len(classes), device, best_model_folder, args)
+            print(f"Best model prototypes visualized in folder: {best_model_folder}", flush=True)
+        else:
+            print("Failed to load best model for prototype visualization", flush=True)
 
     # # set weights of prototypes that are never really found in projection set to 0
     # set_to_zero = []

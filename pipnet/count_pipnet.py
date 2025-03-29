@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 from typing import List, Tuple, Dict, Optional, Union, Callable
 
-from .count_pipnet_utils import GumbelSoftmax, STE_Round, OneHotEncoder, LinearIntermediate
+from .count_pipnet_utils import GumbelSoftmax, STE_Round, OneHotEncoder, LinearIntermediate, BilinearIntermediate
 
 class CountPIPNet(nn.Module):
     """
@@ -236,6 +236,11 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     if intermediate_type == 'linear':
         # Use linear intermediate layer
         intermediate_layer = LinearIntermediate(num_prototypes, max_count)
+        expanded_dim = num_prototypes * max_count
+    # Create the appropriate intermediate layer
+    elif intermediate_type == 'bilinear':
+        # Use bilinear intermediate layer
+        intermediate_layer = BilinearIntermediate(num_prototypes, max_count)
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'onehot':
         # Use one-hot encoder (original approach)

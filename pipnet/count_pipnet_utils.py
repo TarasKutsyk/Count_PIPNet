@@ -294,3 +294,67 @@ class LinearIntermediate(nn.Module):
         result = expanded.view(batch_size, self.num_prototypes * self.expansion_factor)
         
         return result
+
+class BilinearIntermediate(nn.Module):
+    """
+    A bilinear intermediate layer that applies bilinear transformation 
+    after embedding prototype counts into a higher-dimensional space.
+    """
+    def __init__(self, num_prototypes, max_count, expanded_dim=None,
+                 custom_init=False):
+        """
+        Args:
+            num_prototypes: Number of prototypes in the model
+            max_count: Maximum count value to consider
+            expanded_dim: Size of the expanded feature space (defaults to num_prototypes * max_count)
+        """
+        super().__init__()
+        self.num_prototypes = num_prototypes
+        self.max_count = max_count
+        self.expanded_dim = num_prototypes * max_count if expanded_dim is None else expanded_dim
+        
+        # Embedding layer to map from prototype counts to expanded dimension
+        self.embed = nn.Linear(num_prototypes, self.expanded_dim, bias=False)
+        
+        # Two projection matrices for the bilinear transformation
+        self.W = nn.Linear(self.expanded_dim, self.expanded_dim, bias=False)
+        self.V = nn.Linear(self.expanded_dim, self.expanded_dim, bias=False)
+        
+        # Initialize the embedding to create a meaningful mapping
+        with torch.no_grad():
+            # First, zero out all weights
+            self.embed.weight.zero_()
+            
+            # Then initialize the embedding so each prototype affects max_count consecutive dimensions
+            for p in range(num_prototypes):
+                for c in range(max_count):
+                    idx = p * max_count + c
+                    # Each output dimension corresponds to a specific count of a specific prototype
+                    self.embed.weight[idx, p] = c + 1  # Scale by count value
+
+        if custom_init:
+            # Initialize W and V matrices for stable bilinear interaction
+            nn.init.normal_(self.W.weight, mean=0.0, std=0.1)
+            nn.init.normal_(self.V.weight, mean=0.0, std=0.1)
+            
+            # Make W and V slightly tend toward identity matrix to start
+            # This encourages preserving the semantic structure from embedding
+            for i in range(self.expanded_dim):
+                self.W.weight[i, i] += 0.1
+                self.V.weight[i, i] += 0.1
+    
+    def forward(self, x):
+        """
+        Forward pass - maps count values to expanded feature space and applies bilinear transformation.
+        
+        Args:
+            x: Input tensor of counts [batch_size, num_prototypes]
+            
+        Returns:
+            Expanded tensor [batch_size, expanded_dim]
+        """
+        # Map to expanded dimension
+        embedded = self.embed(x)
+        
+        # Apply bilinear transformation
+        return self.W(embedded) * self.V(embedded)

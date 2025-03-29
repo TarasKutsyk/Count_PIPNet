@@ -162,6 +162,11 @@ def get_args() -> argparse.Namespace:
                     type=str,
                     default='onehot',
                     help='Type of intermediate layer to use for CountPIPNet: "onehot" (original) or "linear"')
+    parser.add_argument('--enforce_weight_sparsity',
+                        type=eval,
+                        choices=[True, False],
+                        default=True,
+                        help='Whether to use normalization multiplier & zeroing out weights mechanism from the original PiP-Net paper')
 
     # Parse known args first to get the config file path
     known_args, _ = parser.parse_known_args()

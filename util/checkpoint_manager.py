@@ -228,6 +228,10 @@ class CheckpointManager:
             # Extract epoch if available
             if 'epoch' in checkpoint:
                 result['epoch'] = checkpoint['epoch']
+
+            if 'accuracy' in checkpoint:
+                result['accuracy'] = checkpoint['accuracy']
+                print(f"Loaded model with accuracy: {checkpoint['accuracy']:.4f}", flush=True)
                 
             result['success'] = True
             result['checkpoint_path'] = checkpoint_path
@@ -237,3 +241,62 @@ class CheckpointManager:
             print(f"Error loading training checkpoint: {str(e)}", flush=True)
             
         return result
+
+    def save_best_checkpoint(self, net, optimizer_net, optimizer_classifier, epoch, accuracy):
+        """
+        Save a checkpoint if it's the best performing model so far.
+        
+        Args:
+            net: The network model to save
+            optimizer_net: The network optimizer to save
+            optimizer_classifier: The classifier optimizer to save
+            epoch: Current epoch number
+            accuracy: The test accuracy for this checkpoint
+        """
+        net.eval()
+        checkpoint_dir = self._ensure_checkpoint_dir_exists()
+        
+        # Create the checkpoint data
+        checkpoint_data = {
+            'model_state_dict': net.state_dict(),
+            'optimizer_net_state_dict': optimizer_net.state_dict(),
+            'optimizer_classifier_state_dict': optimizer_classifier.state_dict(),
+            'epoch': epoch,
+            'accuracy': accuracy
+        }
+        
+        # Path for the best model checkpoint
+        best_path = os.path.join(checkpoint_dir, 'net_trained_best')
+        
+        # Check if we should save this as the best model
+        should_save = True
+        if os.path.exists(best_path):
+            try:
+                prev_checkpoint = torch.load(best_path, map_location=self.device)
+                prev_acc = prev_checkpoint.get('accuracy', 0)
+                if prev_acc >= accuracy:
+                    # Previous model was better
+                    should_save = False
+            except Exception as e:
+                print(f"Error checking previous best checkpoint: {str(e)}", flush=True)
+        
+        if should_save:
+            torch.save(checkpoint_data, best_path)
+            print(f"Saved new best model with accuracy {accuracy:.4f} at epoch {epoch}", flush=True)
+        
+        net.train()
+
+    def load_best_checkpoint(self, net, optimizer_net, optimizer_classifier):
+        """
+        Load the best performing model checkpoint.
+        
+        Args:
+            net: The network model to load weights into
+            optimizer_net: The network optimizer to load state into
+            optimizer_classifier: The classifier optimizer to load state into
+            
+        Returns:
+            dict: Information about loaded checkpoint including success status, accuracy and epoch
+        """
+        return self.load_trained_checkpoint(net, optimizer_net, optimizer_classifier, 
+                                        checkpoint_name='net_trained_best')

@@ -15,7 +15,9 @@ def eval_pipnet(net,
         epoch,
         device,
         log: Log = None,  
-        progress_prefix: str = 'Eval Epoch'
+        progress_prefix: str = 'Eval Epoch',
+        enforce_weight_sparsity=True,
+        args=None, # TODO fix
         ) -> dict:
     
     net = net.to(device)
@@ -50,7 +52,9 @@ def eval_pipnet(net,
         xs, ys = xs.to(device), ys.to(device)
         
         with torch.no_grad():
-            net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
+            if enforce_weight_sparsity:
+                print('(TEST) Setting small weights to zero...')
+                net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
             # Use the model to classify this batch of input data
             _, pooled, out = net(xs, inference=True)
             max_out_score, ys_pred = torch.max(out, dim=1)
@@ -58,7 +62,7 @@ def eval_pipnet(net,
 
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))
 
-            if is_count_pipnet:
+            if is_count_pipnet and args.intermediate_layer != 'identity':
                 # Get the maximum count parameter from the model
                 max_count = net.module._max_count
                 # Calculate the number of actual prototypes (before one-hot encoding expanded them)
