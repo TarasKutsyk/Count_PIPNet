@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data
 import os
+# Required imports for visualization
 from PIL import Image, ImageDraw as D
 import torchvision.transforms as transforms
 import torchvision
@@ -19,6 +20,14 @@ def net_forward(xs, net, is_count_pipnet=True):
         pfs, pooled, out = net(xs, inference=run_in_inference)
 
     return pfs, pooled, out
+
+# Add this at the top of the visualization section or before the first use
+def denormalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
+    """Denormalize a tensor image with mean and standard deviation."""
+    tensor = tensor.clone()
+    for t, m, s in zip(tensor, mean, std):
+        t.mul_(s).add_(m)
+    return tensor
 
 def plot_prototype_activations_histograms(net, dataloader, device, output_dir, 
                                          only_important_prototypes=True, 
@@ -310,7 +319,8 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
 @torch.no_grad()                    
 def visualize_topk(net, projectloader, num_classes, device, foldername, 
                    args: argparse.Namespace, k=10, verbose=True, 
-                   are_pretraining_prototypes=False, plot_histograms=True):
+                   are_pretraining_prototypes=False, plot_histograms=True,
+                   visualize_prototype_maps=True, max_feature_maps_per_prototype=3):
     """Visualize top-k activation patches for each prototype. Works with both PIPNet and CountPIPNet."""
 
     print("Visualizing prototypes for topk...", flush=True)
@@ -319,21 +329,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
         os.makedirs(dir)
     
     # Setup tracking dictionaries
-    near_imgs_dirs = dict()
-    seen_max = dict()
-    saved = dict()
-    saved_ys = dict()
-    tensors_per_prototype = dict()
-    
     num_prototypes = net.module._num_prototypes
-    
-    for p in range(num_prototypes):
-        near_imgs_dirs[p] = os.path.join(dir, str(p))
-        seen_max[p] = 0.
-        saved[p] = 0
-        saved_ys[p] = []
-        tensors_per_prototype[p] = []
-    
     patchsize, skip = get_patch_size(args)
     imgs = projectloader.dataset.imgs
     
@@ -427,130 +423,295 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             else:
                 print("Visualizing all prototypes (ignoring classification weights during pretraining)")
 
-    # Show progress on progress bar
-    img_iter = tqdm(enumerate(projectloader),
-                    total=len(projectloader),
-                    desc='Collecting topk',
-                    ncols=0)
-
-    # Iterate through the data
-    images_seen = 0
-    topks = dict()
+    # Initialize storage for top-k prototypes
+    prototype_storage = {}
+    for p in range(num_prototypes):
+        if are_pretraining_prototypes or prototype_importance[p] > 1e-3:
+            prototype_storage[p] = []
     
-    # First pass: collect top-k candidates
-    for i, (xs, ys) in img_iter:
-        images_seen += 1
-        xs, ys = xs.to(device), ys.to(device)
-
-        with torch.no_grad():
-            # Use the model to get prototype activations
-            pfs, pooled, out = net_forward(xs, net, is_count_pipnet)
-
-            pooled = pooled.squeeze(0) 
-            pfs = pfs.squeeze(0) 
-            
-            for p in range(pooled.shape[0]):
-                # Check if prototype is relevant to any class (skip check for pretraining)
-                if are_pretraining_prototypes or prototype_importance[p] > 1e-3:
-                    if p not in topks.keys():
-                        topks[p] = []
-                        
-                    if len(topks[p]) < k:
-                        topks[p].append((i, pooled[p].item()))
-                    else:
-                        topks[p] = sorted(topks[p], key=lambda tup: tup[1], reverse=True)
-                        if topks[p][-1][1] < pooled[p].item():
-                            topks[p][-1] = (i, pooled[p].item())
-                        if topks[p][-1][1] == pooled[p].item():
-                            # equal scores - randomly choose
-                            replace_choice = random.choice([0, 1])
-                            if replace_choice > 0:
-                                topks[p][-1] = (i, pooled[p].item())
-
-    alli = []
-    prototypes_not_used = []
-    for p in topks.keys():
-        found = False
-        for idx, score in topks[p]:
-            alli.append(idx)
-            if score > 0.1:  #in case prototypes have fewer than k well-related patches
-                found = True
-        if not found:
-            prototypes_not_used.append(p)
-
-    print(len(prototypes_not_used), "prototypes do not have any similarity score > 0.1. Will be ignored in visualisation.")
-    abstained = 0
+    # Create feature maps directory if needed
+    if visualize_prototype_maps:
+        feature_maps_dir = os.path.join(dir, "feature_maps")
+        os.makedirs(feature_maps_dir, exist_ok=True)
+    
     # Show progress on progress bar
     img_iter = tqdm(enumerate(projectloader),
                     total=len(projectloader),
-                    mininterval=50.,
-                    desc='Visualizing topk',
+                    desc='Processing dataset (single pass)',
                     ncols=0)
-    for i, (xs, ys) in img_iter: #shuffle is false so should lead to same order as in imgs
-        if i in alli:
-            xs, ys = xs.to(device), ys.to(device)
-            # Fix the image - we know that there's a prototype associated to it
-            for p in topks.keys():
-                # Find the associated prototype
-                if p not in prototypes_not_used:
-                    for idx, score in topks[p]:
-                        if idx == i:
-                            # Use the model to classify this batch of input data
-                            with torch.no_grad():
-                                softmaxes, pooled, out = net_forward(xs, net, is_count_pipnet)
-                            
-                                outmax = torch.amax(out,dim=1)[0] #shape ([1]) because batch size of projectloader is 1
-                                if outmax.item() == 0.:
-                                    abstained+=1
-                            
-                            # Take the max per prototype.                             
-                            max_per_prototype, max_idx_per_prototype = torch.max(softmaxes, dim=0)
-                            max_per_prototype_h, max_idx_per_prototype_h = torch.max(max_per_prototype, dim=1)
-                            max_per_prototype_w, max_idx_per_prototype_w = torch.max(max_per_prototype_h, dim=1) #shape (num_prototypes)
-                            
-                            # For pretraining prototypes, ignore classification weights
-                            if are_pretraining_prototypes or (prototype_importance[p] > 1e-10) or ('pretrain' in foldername):
-                                h_idx = max_idx_per_prototype_h[p, max_idx_per_prototype_w[p]]
-                                w_idx = max_idx_per_prototype_w[p]
-                                
-                                img_to_open = imgs[i]
-                                if isinstance(img_to_open, tuple) or isinstance(img_to_open, list): #dataset contains tuples of (img,label)
-                                    img_to_open = img_to_open[0]
-                                
-                                image = transforms.Resize(size=(args.image_size, args.image_size))(Image.open(img_to_open))
-                                img_tensor = transforms.ToTensor()(image).unsqueeze_(0) #shape (1, 3, h, w)
-                                h_coor_min, h_coor_max, w_coor_min, w_coor_max = get_img_coordinates(args.image_size, softmaxes.shape, patchsize, skip, h_idx, w_idx)
-                                img_tensor_patch = img_tensor[0, :, h_coor_min:h_coor_max, w_coor_min:w_coor_max]
-                                        
-                                saved[p]+=1
-                                tensors_per_prototype[p].append(img_tensor_patch)
-
-    print("Abstained: ", abstained, flush=True)
+    
+    abstained = 0
+    
+    # Process each image only once
+    for i, (xs, ys) in img_iter:
+        xs, ys = xs.to(device), ys.to(device)
+        
+        with torch.no_grad():
+            # Get model outputs
+            proto_features, pooled, out = net_forward(xs, net, is_count_pipnet)
+            
+            # Check if model abstained
+            outmax = torch.amax(out, dim=1)[0]
+            if outmax.item() == 0.:
+                abstained += 1
+            
+            # Get image path
+            img_path = imgs[i]
+            if isinstance(img_path, tuple) or isinstance(img_path, list):
+                img_path = img_path[0]
+            
+            # Process each prototype
+            for p in prototype_storage.keys():
+                # Get the activation score for this prototype
+                score = pooled.squeeze(0)[p].item()
+                
+                # Get the prototype feature map
+                feature_map = proto_features.squeeze(0)[p].clone().cpu()
+                
+                # Find the location of maximum activation
+                max_h, h_idx = torch.max(feature_map, dim=0)
+                max_w, w_idx = torch.max(max_h, dim=0)
+                h_idx = h_idx[w_idx].item()
+                w_idx = w_idx.item()
+                
+                # Calculate patch coordinates
+                h_coor_min, h_coor_max, w_coor_min, w_coor_max = get_img_coordinates(
+                    args.image_size, proto_features.shape, patchsize, skip, h_idx, w_idx
+                )
+                
+                # Skip loading the image until we know we need it
+                # Only process this prototype-image pair if it's a candidate for top-k
+                images = prototype_storage[p]
+                if len(images) < k or score > images[-1]['score']:
+                    # Now load and process the image
+                    image = transforms.Resize(size=(args.image_size, args.image_size))(Image.open(img_path))
+                    img_tensor = transforms.ToTensor()(image).unsqueeze_(0)
+                    img_tensor_patch = img_tensor[0, :, h_coor_min:h_coor_max, w_coor_min:w_coor_max].clone().cpu()
+                    
+                    # Store all the data we need
+                    image_data = {
+                        'index': i,
+                        'image_path': img_path,
+                        'image_tensor': img_tensor.squeeze(0).clone().cpu(),
+                        'patch_tensor': img_tensor_patch,
+                        'coords': (h_coor_min, h_coor_max, w_coor_min, w_coor_max),
+                        'feature_map': feature_map,
+                        'score': score,
+                        'h_idx': h_idx,
+                        'w_idx': w_idx
+                    }
+                    
+                    # Add to the prototype's images if it's in the top-k
+                    if len(images) < k:
+                        images.append(image_data)
+                        images.sort(key=lambda x: x['score'], reverse=True)
+                    else:
+                        # Already have k images, replace the lowest score
+                        images[-1] = image_data
+                        images.sort(key=lambda x: x['score'], reverse=True)
+    
+    print("Abstained:", abstained, flush=True)
+    
+    # Find prototypes without significant activations
+    prototypes_not_used = []
+    for p, images in prototype_storage.items():
+        found_significant = False
+        for img_data in images:
+            if img_data['score'] > 0.1:
+                found_significant = True
+                break
+        
+        if not found_significant:
+            prototypes_not_used.append(p)
+    
+    print(len(prototypes_not_used), "prototypes do not have any similarity score > 0.1. Will be ignored in visualisation.")
+    
+    # Create prototype visualizations
     all_tensors = []
-    for p in range(net.module._num_prototypes):
-        if saved[p]>0:
-            # add text next to each topk-grid, to easily see which prototype it is
-            text = "P "+str(p)
-            txtimage = Image.new("RGB", (img_tensor_patch.shape[1],img_tensor_patch.shape[2]), (0, 0, 0))
+    tensors_per_prototype = {p: [] for p in prototype_storage.keys()}
+    saved = {p: 0 for p in prototype_storage.keys()}
+    
+    for p, images in prototype_storage.items():
+        if p in prototypes_not_used:
+            continue
+        
+        # Create tensor patches
+        for img_data in images:
+            # Add to the tensor collection
+            saved[p] += 1
+            tensors_per_prototype[p].append(img_data['patch_tensor'])
+        
+        # Add text next to each topk-grid
+        if len(images) > 0:
+            img_data = images[0]  # Use first image to get patch size
+            patch_shape = img_data['patch_tensor'].shape
+            
+            text = "P " + str(p)
+            txtimage = Image.new("RGB", (patch_shape[1], patch_shape[2]), (0, 0, 0))
+            # Make sure to import this at the top of the file: from PIL import ImageDraw as D
             draw = D.Draw(txtimage)
-            draw.text((img_tensor_patch.shape[0]//2, img_tensor_patch.shape[1]//2), text, anchor='mm', fill="white")
+            draw.text((patch_shape[1]//2, patch_shape[2]//2), text, anchor='mm', fill="white")
             txttensor = transforms.ToTensor()(txtimage)
             tensors_per_prototype[p].append(txttensor)
-            # save top-k image patches in grid
+            
+            # Save top-k image patches in grid
             try:
                 grid = torchvision.utils.make_grid(tensors_per_prototype[p], nrow=k+1, padding=1)
-                torchvision.utils.save_image(grid,os.path.join(dir,"grid_topk_%s.png"%(str(p))))
-                if saved[p]>=k:
-                    all_tensors+=tensors_per_prototype[p]
-            except:
-                pass
-    if len(all_tensors)>0:
+                torchvision.utils.save_image(grid, os.path.join(dir, f"grid_topk_{p}.png"))
+                if saved[p] >= k:
+                    all_tensors.extend(tensors_per_prototype[p])
+            except Exception as e:
+                print(f"Error creating grid for prototype {p}: {e}")
+    
+    # Create a grid with all prototypes
+    if len(all_tensors) > 0:
         grid = torchvision.utils.make_grid(all_tensors, nrow=k+1, padding=1)
-        torchvision.utils.save_image(grid,os.path.join(dir,"grid_topk_all.png"))
+        torchvision.utils.save_image(grid, os.path.join(dir, "grid_topk_all.png"))
     else:
-        print("Pretrained prototypes not visualized. Try to pretrain longer.", flush=True)
-    return topks
+        print("Prototypes not visualized. Try to pretrain longer.", flush=True)
+    
+    # Create feature map visualizations if requested
+    if visualize_prototype_maps:
+        import matplotlib.pyplot as plt
+        import matplotlib.cm as cm
+        import numpy as np
+        from scipy.ndimage import zoom
         
+        print("Creating prototype feature map visualizations...", flush=True)
+        
+        for p, images in prototype_storage.items():
+            if p in prototypes_not_used or len(images) == 0:
+                continue
+            
+            # Create a prototype-specific directory
+            proto_feature_dir = os.path.join(feature_maps_dir, f"prototype_{p}")
+            os.makedirs(proto_feature_dir, exist_ok=True)
+            
+            # Select diverse activations - highest, middle, and lowest that's still > 0.1
+            selected_indices = []
+            
+            # Always include highest activation
+            selected_indices.append(0)
+            
+            # If we have more than 2 samples, add middle sample
+            if len(images) > 2:
+                selected_indices.append(len(images) // 2)
+            
+            # If we have more than 1 sample, add lowest sample that still exceeds threshold
+            if len(images) > 1:
+                # Find the lowest index where score > 0.1, or use the last element
+                lowest_idx = len(images) - 1
+                while lowest_idx > 0 and images[lowest_idx]['score'] < 0.1:
+                    lowest_idx -= 1
+                
+                if lowest_idx not in selected_indices:
+                    selected_indices.append(lowest_idx)
+            
+            # Limit to max 3 feature maps per prototype
+            selected_indices = selected_indices[:max_feature_maps_per_prototype]
+            
+            # Create visualizations for selected samples
+            for i, idx in enumerate(selected_indices):
+                img_data = images[idx]
+                
+                # Extract data - everything should already be CPU tensors or Python scalars
+                img_path = img_data['image_path']
+                img_tensor = img_data['image_tensor']
+                coords = img_data['coords']
+                feature_map = img_data['feature_map']
+                score = img_data['score']
+                h_idx = img_data['h_idx']
+                w_idx = img_data['w_idx']
+                
+                feature_map_np = feature_map.numpy()
+                feature_map_sum = feature_map_np.sum()
+                
+                # Create a filename based on the prototype, rank and score
+                base_filename = f"proto_{p}_rank_{i+1}_of_{len(selected_indices)}_score_{score:.3f}"
+                
+                # Convert image tensor to numpy for plotting
+                img_np = img_tensor.permute(1, 2, 0).numpy()
+                
+                # Save the original image with patch rectangle
+                plt.figure(figsize=(10, 8))
+                plt.imshow(img_np)
+                h_min, h_max, w_min, w_max = coords
+                rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
+                                    fill=False, edgecolor='yellow', linewidth=2)
+                plt.gca().add_patch(rect)
+                plt.axis('off')
+                plt.title(f"Prototype {p} - Activation: {score:.3f} (Map Sum: {feature_map_sum:.3f})")
+                plt.tight_layout()
+                plt.savefig(os.path.join(proto_feature_dir, f"{base_filename}_original.png"), 
+                            bbox_inches='tight', dpi=150)
+                plt.close()
+                
+                # Create side-by-side visualization with original and heatmap
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+                
+                # Show original image on the left
+                ax1.imshow(img_np)
+                rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
+                                    fill=False, edgecolor='yellow', linewidth=2)
+                ax1.add_patch(rect)
+                ax1.set_title("Original Image")
+                ax1.axis('off')
+                
+                # Show feature map on the right
+                heatmap = ax2.imshow(feature_map_np, cmap='viridis')
+                ax2.scatter(w_idx, h_idx, marker='x', color='red', s=100)
+                ax2.set_title("Feature Map Heatmap")
+                ax2.axis('off')
+                fig.colorbar(heatmap, ax=ax2, label="Activation")
+                
+                plt.suptitle(f"Prototype {p} - Activation: {score:.3f}")
+                plt.tight_layout()
+                plt.savefig(os.path.join(proto_feature_dir, f"{base_filename}_feature_map.png"), 
+                            bbox_inches='tight', dpi=150)
+                plt.close()
+                
+                # Create overlay visualization
+                plt.figure(figsize=(10, 8))
+                plt.imshow(img_np)
+                
+                # Resize feature map to match image dimensions
+                zoom_y = img_np.shape[0] / feature_map_np.shape[0]
+                zoom_x = img_np.shape[1] / feature_map_np.shape[1]
+                resized_feature_map = zoom(feature_map_np, (zoom_y, zoom_x))
+                
+                # Create a masked version of the feature map for cleaner overlay
+                mask = resized_feature_map > 0.1  # Only show activations above threshold
+                overlay = np.zeros((*resized_feature_map.shape, 4))  # RGBA
+                
+                # Create colormap
+                cmap = cm.get_cmap('viridis')
+                
+                # Fill overlay with colors from colormap based on activation values
+                for y in range(resized_feature_map.shape[0]):
+                    for x in range(resized_feature_map.shape[1]):
+                        if mask[y, x]:
+                            color = cmap(resized_feature_map[y, x])
+                            overlay[y, x] = (*color[:3], 0.7)  # RGB with 0.7 alpha
+                
+                plt.imshow(overlay, alpha=0.7)
+                rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
+                                    fill=False, edgecolor='yellow', linewidth=2)
+                plt.gca().add_patch(rect)
+                plt.title(f"Prototype {p} - Feature Map Overlay (Activation: {score:.3f})")
+                plt.axis('off')
+                plt.tight_layout()
+                plt.savefig(os.path.join(proto_feature_dir, f"{base_filename}_overlay.png"), 
+                            bbox_inches='tight', dpi=150)
+                plt.close()
+    
+    # Only return the indices and scores for backward compatibility
+    topks = {}
+    for p, images in prototype_storage.items():
+        if p not in prototypes_not_used:
+            topks[p] = [(img_data['index'], img_data['score']) for img_data in images]
+    
+    return topks
+
 
 def visualize(net, projectloader, num_classes, device, foldername, args: argparse.Namespace):
     print("Visualizing prototypes...", flush=True)

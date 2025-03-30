@@ -9,6 +9,8 @@ from typing import Tuple, Dict
 from torch import Tensor
 import random
 from sklearn.model_selection import train_test_split
+# Add this new import
+from kornia.augmentation import RandomGaussianNoise
 
 def get_data(args: argparse.Namespace): 
     """
@@ -30,6 +32,8 @@ def get_data(args: argparse.Namespace):
     # Added new dataset options for our custom datasets
     if args.dataset == 'geometric_shapes':
         return get_geometric_shapes(True, './data/geometric_shapes/dataset/train', './data/geometric_shapes/dataset/train', './data/geometric_shapes/dataset/test', args.image_size, args.seed, args.validation_size)
+    if args.dataset == 'geometric_shapes_gaussian_noise':
+        return get_geometric_shapes_with_gaussian_noise(True, './data/geometric_shapes_no_noise/dataset/train', './data/geometric_shapes_no_noise/dataset/train', './data/geometric_shapes_no_noise/dataset/test', args.image_size, args.seed, args.validation_size)
     if args.dataset == 'mnist_counting':
         return get_mnist_counting(True, './data/mnist_counting/dataset/train', './data/mnist_counting/dataset/train', './data/mnist_counting/dataset/test', args.image_size, args.seed, args.validation_size)
     raise Exception(f'Could not load data set, data set "{args.dataset}" not found!')
@@ -259,6 +263,72 @@ def get_geometric_shapes(augment:bool, train_dir:str, project_dir: str, test_dir
             transforms.ColorJitter(brightness=0.1, contrast=0.1),  # Minor color jitter
             transforms.RandomCrop(size=(img_size, img_size)),
             transforms.ToTensor(),
+            normalize
+        ])
+    else:
+        transform1 = transform_no_augment    
+        transform2 = transform_no_augment           
+
+    return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
+
+def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, validation_size:float): 
+    """
+    Get the geometric shapes dataset with appropriate transformations.
+    
+    This dataset contains synthetic images with different geometric shapes (circle, square, triangle, hexagon)
+    in varying counts. The dataset is designed to test CountPIPNet's ability to count and recognize shapes.
+    
+    Args:
+        augment: Whether to apply data augmentation
+        train_dir: Directory containing training images
+        project_dir: Directory containing projection images
+        test_dir: Directory containing test images
+        img_size: Target image size
+        seed: Random seed for reproducibility
+        validation_size: Proportion of data to use for validation if test_dir is None
+        
+    Returns:
+        Processed datasets and related information
+    """
+    # Standard ImageNet mean and std for normalization 
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    normalize = transforms.Normalize(mean=mean, std=std)
+    
+    # Basic transformation without augmentation
+    transform_no_augment = transforms.Compose([
+        transforms.Resize(size=(img_size, img_size)),
+        transforms.ToTensor(),
+        normalize
+    ])
+
+    # Wrap Kornia transform to handle dimensions correctly
+    class KorniaWrapper(torch.nn.Module):
+        def __init__(self, transform):
+            super().__init__()
+            self.transform = transform
+            
+        def forward(self, x):
+            # Add batch dimension, apply transform, then remove batch dimension
+            x = x.unsqueeze(0)  # [C,H,W] -> [1,C,H,W]
+            x = self.transform(x)
+            return x.squeeze(0)  # [1,C,H,W] -> [C,H,W]
+    
+    # For geometric shapes, we use lighter augmentation since they're synthetic
+    if augment:
+        # First stage of augmentation (size and geometric)
+        transform1 = transforms.Compose([
+            transforms.Resize(size=(img_size+32, img_size+32)),
+            transforms.RandomRotation(10, fill=255),  # Fill with white (255) instead of black (0)
+            transforms.RandomResizedCrop(img_size+8, scale=(0.95, 1.))
+        ])
+        
+        # Second stage of augmentation (color and cropping)
+        transform2 = transforms.Compose([
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),  # Minor color jitter
+            transforms.RandomCrop(size=(img_size, img_size)),
+            transforms.ToTensor(),
+            KorniaWrapper(RandomGaussianNoise(mean=0.0, std=0.1, p=0.5)),  # Added Gaussian noise
             normalize
         ])
     else:

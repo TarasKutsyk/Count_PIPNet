@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 CONFIG = {
     # Dataset parameters
     # Directory to save the generated images
-    'output_dir': './data/geometric_shapes/dataset',
+    'output_dir': './data/geometric_shapes_no_noise/dataset',
 
     'img_size': 192,                          # Size of output images (square)
     'train_samples_per_class': 100,           # Number of training samples per class
@@ -38,7 +38,7 @@ CONFIG = {
     # Difficulty parameters
     'max_rotation': 15,                       # Maximum rotation angle (degrees)
     'max_overlap': 0.15,                      # Maximum allowed overlap between objects (0-1)
-    'noise_level': 50,                        # Background noise level (0-255)
+    'noise_level': 0,                        # Background noise level (0-255)
     'outline_width': 2,                       # Width of shape outlines (pixels)
     
     # Shape types available

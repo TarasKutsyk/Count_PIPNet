@@ -81,10 +81,12 @@ class OneHotEncoder(nn.Module):
             Encoded tensor [batch_size, num_prototypes, num_bins]
         """
         if self.use_ste:
-            return ModifiedSTEFunction.apply(x, self.num_bins)
+            encodings = ModifiedSTEFunction.apply(x, self.num_bins)
         else:
-            return create_modified_encoding(x, self.num_bins)
+            encodings = create_modified_encoding(x, self.num_bins)
 
+        encodings_flattened = encodings.view(encodings.size(0), -1)
+        return encodings_flattened
 
 def create_modified_encoding(x: torch.Tensor, max_count: int) -> torch.Tensor:
     """

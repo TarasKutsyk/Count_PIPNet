@@ -312,7 +312,6 @@ def visualize_augmentation_components(dataset_name, num_samples=5, output_dir=No
 def main():
     parser = argparse.ArgumentParser(description='Visualize augmented data samples for PIPNet datasets')
     parser.add_argument('--dataset', type=str, default='mnist_counting',
-                      choices=['mnist_counting', 'geometric_shapes'], 
                       help='Dataset to visualize')
     parser.add_argument('--num_samples', type=int, default=5, 
                       help='Number of samples to visualize augmentations for')

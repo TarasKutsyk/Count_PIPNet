@@ -64,7 +64,7 @@ def analyze_convnext_stages():
         
         # Trace tensor flow through the network
         backbone.eval()
-        dummy_input = torch.zeros(1, 3, 224, 224)
+        dummy_input = torch.zeros(1, 3, 192, 192)
         
         # Register hooks to capture both inputs and outputs
         stage_data = {}

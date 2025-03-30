@@ -98,6 +98,20 @@ class CountPIPNet(nn.Module):
         # In training, return original counts for input to L_T loss term
         return proto_features, counts, out
     
+    def _calculate_counts_for_testing(self, proto_features):
+        """
+        Helper method for testing that isolates the count calculation logic.
+        
+        Args:
+            proto_features: Tensor of prototype feature maps [batch_size, num_prototypes, height, width]
+            
+        Returns:
+            Tensor of counts [batch_size, num_prototypes]
+        """
+        # Sum over spatial dimensions to count prototype occurrences
+        counts = proto_features.sum(dim=(2, 3))
+        return counts
+    
     def update_temperature(self, new_temperature):
         """
         Update the Gumbel-Softmax temperature parameter during training.
