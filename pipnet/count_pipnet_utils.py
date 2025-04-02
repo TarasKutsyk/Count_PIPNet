@@ -247,56 +247,6 @@ class ModifiedSTEFunction(torch.autograd.Function):
         
         return counts_grad, None
 
-class LinearIntermediate(nn.Module):
-    """
-    A simple linear intermediate layer that maps count values to a higher-dimensional space.
-    This avoids the discretization and potential gradient issues of one-hot encoding.
-    """
-    def __init__(self, num_prototypes, max_count, expansion_factor=None):
-        """
-        Args:
-            num_prototypes: Number of prototypes in the model
-            max_count: Maximum count value to consider
-            expansion_factor: Factor to expand the feature dimension by (defaults to max_count)
-        """
-        super().__init__()
-        self.num_prototypes = num_prototypes
-        self.max_count = max_count
-        self.expansion_factor = max_count if expansion_factor is None else expansion_factor
-        
-        # Create a simple linear layer that maps each prototype's count to expanded dimensions
-        self.linear = nn.Linear(1, self.expansion_factor, bias=False)
-        
-        # Initialize to approximate one-hot behavior for easier comparison
-        # Higher counts activate later dimensions
-        with torch.no_grad():
-            for i in range(self.expansion_factor):
-                # Create a ramp that peaks at count i+1
-                self.linear.weight[i, 0] = (i + 1) / self.max_count
-        
-    def forward(self, x):
-        """
-        Forward pass - maps count values to expanded feature space.
-        
-        Args:
-            x: Input tensor of counts [batch_size, num_prototypes]
-            
-        Returns:
-            Expanded tensor [batch_size, num_prototypes * expansion_factor]
-        """
-        batch_size = x.shape[0]
-        
-        # Reshape for linear layer processing
-        x_reshaped = x.view(batch_size * self.num_prototypes, 1)
-        
-        # Apply linear transformation
-        expanded = self.linear(x_reshaped)
-        
-        # Reshape back to batch format
-        result = expanded.view(batch_size, self.num_prototypes * self.expansion_factor)
-        
-        return result
-
 class BilinearIntermediate(nn.Module):
     """
     A bilinear intermediate layer that applies bilinear transformation 
@@ -414,3 +364,102 @@ class LinearFull(nn.Module):
             Expanded tensor [batch_size, expanded_dim]
         """
         return self.linear(x)
+
+    def prototype_to_weight_relevance(self, prototype_idx):
+        # Return the full weight vector corresponding to the given prototype index.
+        # self.linear.weight has shape [expanded_dim, num_prototypes]
+        return self.linear.weight[:, prototype_idx]
+
+class IdentityIntermediate(nn.Module):
+    def __init__(self, num_prototypes):
+        """
+        A wrapper around nn.Identity that implements the same interface as
+        other intermediate layers, including the prototype_to_weight_relevance method.
+        
+        Args:
+            num_prototypes: The number of prototypes (i.e. the dimension of the identity mapping)
+        """
+        super().__init__()
+        self.identity = nn.Identity()
+        self.num_prototypes = num_prototypes
+
+    def forward(self, x):
+        return self.identity(x)
+
+    def prototype_to_weight_relevance(self, prototype_idx):
+        """
+        Returns a vector of all ones with length equal to the number of prototypes.
+        This indicates that the identity mapping preserves all input values uniformly.
+        The prototype_idx argument is ignored since the mapping is identical for all prototypes.
+        """
+        return torch.ones(self.num_prototypes)
+
+class LinearIntermediate(nn.Module):
+    """
+    A simple linear intermediate layer that maps count values to a higher-dimensional space.
+    This avoids the discretization and potential gradient issues of one-hot encoding.
+    """
+    def __init__(self, num_prototypes, max_count, expansion_factor=None):
+        """
+        Args:
+            num_prototypes: Number of prototypes in the model
+            max_count: Maximum count value to consider
+            expansion_factor: Factor to expand the feature dimension by (defaults to max_count)
+        """
+        super().__init__()
+        self.num_prototypes = num_prototypes
+        self.max_count = max_count
+        self.expansion_factor = max_count if expansion_factor is None else expansion_factor
+        
+        # Create a simple linear layer that maps each prototype's count to expanded dimensions
+        self.linear = nn.Linear(1, self.expansion_factor, bias=False)
+        
+        # Initialize to approximate one-hot behavior for easier comparison
+        # Higher counts activate later dimensions
+        with torch.no_grad():
+            for i in range(self.expansion_factor):
+                # Create a ramp that peaks at count i+1
+                self.linear.weight[i, 0] = (i + 1) / self.max_count
+        
+    def forward(self, x):
+        """
+        Forward pass - maps count values to expanded feature space.
+        
+        Args:
+            x: Input tensor of counts [batch_size, num_prototypes]
+            
+        Returns:
+            Expanded tensor [batch_size, num_prototypes * expansion_factor]
+        """
+        batch_size = x.shape[0]
+        
+        # Reshape for linear layer processing
+        x_reshaped = x.view(batch_size * self.num_prototypes, 1)
+        
+        # Apply linear transformation
+        expanded = self.linear(x_reshaped)
+        
+        # Reshape back to batch format
+        result = expanded.view(batch_size, self.num_prototypes * self.expansion_factor)
+        
+        return result
+
+    def prototype_to_weight_relevance(self, prototype_idx):
+        # Total length of the flattened output vector
+        total_length = self.num_prototypes * self.expansion_factor
+
+        # Create a zero tensor of the appropriate size
+        sparse_vector = torch.zeros(total_length, device=self.linear.weight.device, dtype=self.linear.weight.dtype)
+        
+        # Get the non-zero weight values for a single prototype
+        # Note: self.linear.weight has shape [expansion_factor, 1]
+        prototype_weights = self.linear.weight[:, 0]
+        
+        # Compute the block indices corresponding to the given prototype
+        start_idx = prototype_idx * self.expansion_factor
+        end_idx = start_idx + self.expansion_factor
+        
+        # Place the prototype's weights into their block positions
+        sparse_vector[start_idx:end_idx] = prototype_weights
+        
+        return sparse_vector

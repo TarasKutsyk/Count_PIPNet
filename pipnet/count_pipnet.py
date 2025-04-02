@@ -266,7 +266,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'identity':
         # Identity intermediate layer
-        intermediate_layer = nn.Identity()
+        intermediate_layer = IdentityIntermediate(num_prototypes)
         expanded_dim = num_prototypes
     else:
         raise ValueError(f"Unknown intermediate layer type: {intermediate_type}")

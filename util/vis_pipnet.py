@@ -21,22 +21,44 @@ def net_forward(xs, net, is_count_pipnet=True):
 
     return pfs, pooled, out
 
-# Add this at the top of the visualization section or before the first use
-def denormalize(tensor, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
-    """Denormalize a tensor image with mean and standard deviation."""
-    tensor = tensor.clone()
-    for t, m, s in zip(tensor, mean, std):
-        t.mul_(s).add_(m)
-    return tensor
-
-@torch.no_grad()                    
+@torch.no_grad()
 def visualize_topk(net, projectloader, num_classes, device, foldername, 
-                   args: argparse.Namespace, k=10, verbose=True, 
-                   are_pretraining_prototypes=False, plot_histograms=False,
-                   visualize_prototype_maps=False, max_feature_maps_per_prototype=3):
-    """Visualize top-k activation patches for each prototype. Works with both PIPNet and CountPIPNet."""
+                  args: argparse.Namespace, k=10, verbose=True, 
+                  are_pretraining_prototypes=False, plot_histograms=True,
+                  visualize_prototype_maps=True, max_feature_maps_per_prototype=3):
+    """
+    Wrapper function for prototype visualization that delegates to the appropriate implementation
+    based on the model type (CountPIPNet vs regular PIPNet).
+    """
+    # Detect if using CountPIPNet by checking for _max_count attribute
+    is_count_pipnet = hasattr(net.module, '_max_count')
+    
+    if is_count_pipnet:
+        return visualize_topk_count_pipnet(
+            net, projectloader, num_classes, device, foldername, 
+            args, k, verbose, are_pretraining_prototypes, plot_histograms,
+            visualize_prototype_maps, max_feature_maps_per_prototype
+        )
+    else:
+        return visualize_topk_pipnet(
+            net, projectloader, num_classes, device, foldername, 
+            args, k, verbose, are_pretraining_prototypes, plot_histograms,
+            visualize_prototype_maps, max_feature_maps_per_prototype
+        )
 
-    print("Visualizing prototypes for topk...", flush=True)
+@torch.no_grad()
+def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername, 
+                          args: argparse.Namespace, k=10, verbose=True, 
+                          are_pretraining_prototypes=False, plot_histograms=True,
+                          visualize_prototype_maps=True, max_feature_maps_per_prototype=3):
+    """
+    Original visualization function for standard PIPNet models.
+    This version uses the single-pass approach to avoid inconsistencies.
+    """
+    # Required imports for visualization
+    from PIL import Image, ImageDraw as D
+    
+    print("Visualizing prototypes for topk (PIPNet)...", flush=True)
     dir = os.path.join(args.log_dir, foldername)
     if not os.path.exists(dir):
         os.makedirs(dir)
@@ -50,25 +72,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
     net.eval()
     classification_weights = net.module._classification.weight
     
-    # Detect if using CountPIPNet by checking for _max_count attribute
-    is_count_pipnet = hasattr(net.module, '_max_count')
-
-    # Handle classification weights differently for CountPIPNet
-    if is_count_pipnet:
-        max_count = net.module._max_count
-        num_bins = max_count
-        
-        # If weights are expanded, reshape and process them
-        if classification_weights.shape[1] > num_prototypes:
-            weights_reshaped = classification_weights.reshape(num_classes, num_prototypes, num_bins)
-            # Sum across non-zero counts for each prototype
-            prototype_importance = weights_reshaped.sum(dim=2).max(dim=0)[0]
-        else:
-            # Fall back to standard method if weights aren't expanded
-            prototype_importance = torch.max(classification_weights, dim=0)[0]
-    else:
-        # Original PIPNet - direct mapping
-        prototype_importance = torch.max(classification_weights, dim=0)[0]
+    # Determine prototype importance
+    prototype_importance = torch.max(classification_weights, dim=0)[0]
 
     # When visualizing pretraining prototypes, include all prototypes regardless of weights
     if are_pretraining_prototypes:
@@ -90,20 +95,19 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             output_dir=histogram_dir,
             only_important_prototypes=only_important_prototypes,
             importance_threshold=1e-3,
-            is_count_pipnet=is_count_pipnet,
+            is_count_pipnet=False,
         )
 
     if verbose:
-        # Debug information for both model types
+        # Debug information
         with torch.no_grad():
-            print(f"Detected model type: {'CountPIPNet' if is_count_pipnet else 'PIPNet'}")
             print(f"Visualizing {'pretraining' if are_pretraining_prototypes else 'trained'} prototypes")
 
             xs, ys = next(iter(projectloader))
             xs, ys = xs.to(device), ys.to(device)
             
             # Run the model
-            pfs, pooled, out = net_forward(xs, net, is_count_pipnet)
+            pfs, pooled, out = net(xs, inference=True)
 
             pooled = pooled.squeeze(0)
             pfs = pfs.squeeze(0)
@@ -116,15 +120,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             # Show pooled values
             print("Pooled values:", [round(v, 4) for v in pooled.tolist()])
             
-            # Handle classification weights correctly for both models
-            if is_count_pipnet:
-                if net.module._classification.weight.shape[1] > num_prototypes:
-                    print(f"Classification weights shape: {net.module._classification.weight.shape} (expanded)")
-                else:
-                    print(f"Classification weights shape: {net.module._classification.weight.shape} (not expanded)")
-            else:
-                # Original PIPNet
-                print(f"Classification weights shape: {net.module._classification.weight.shape}")
+            # Handle classification weights
+            print(f"Classification weights shape: {net.module._classification.weight.shape}")
             
             if not are_pretraining_prototypes:
                 print("Max classification weight per prototype:", [round(v, 4) for v in prototype_importance.tolist()])
@@ -161,7 +158,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
         
         with torch.no_grad():
             # Get model outputs
-            proto_features, pooled, out = net_forward(xs, net, is_count_pipnet)
+            proto_features, pooled, out = net(xs, inference=True)
             
             # Check if model abstained
             outmax = torch.amax(out, dim=1)[0]
@@ -261,7 +258,6 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             
             text = "P " + str(p)
             txtimage = Image.new("RGB", (patch_shape[1], patch_shape[2]), (0, 0, 0))
-            # Make sure to import this at the top of the file: from PIL import ImageDraw as D
             draw = D.Draw(txtimage)
             draw.text((patch_shape[1]//2, patch_shape[2]//2), text, anchor='mm', fill="white")
             txttensor = transforms.ToTensor()(txtimage)
@@ -327,7 +323,7 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             for i, idx in enumerate(selected_indices):
                 img_data = images[idx]
                 
-                # Extract data - everything should already be CPU tensors or Python scalars
+                # Extract data
                 img_path = img_data['image_path']
                 img_tensor = img_data['image_tensor']
                 coords = img_data['coords']
@@ -422,6 +418,503 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
     for p, images in prototype_storage.items():
         if p not in prototypes_not_used:
             topks[p] = [(img_data['index'], img_data['score']) for img_data in images]
+    
+    return topks
+
+@torch.no_grad()
+def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldername, 
+                               args: argparse.Namespace, k=10, verbose=True, 
+                               are_pretraining_prototypes=False, plot_histograms=True,
+                               visualize_prototype_maps=True, max_feature_maps_per_prototype=3):
+    """
+    Visualization function specially designed for CountPIPNet models.
+    This version uses class information to select examples with different counts
+    and processes everything in a single pass for efficiency.
+    """
+    # Required imports for visualization
+    from PIL import Image, ImageDraw as D
+    import math
+    import heapq
+    
+    # Class to count mapping configuration
+    # Maps class ranges to their corresponding count values
+    # This can be edited based on dataset organization
+    class_to_count_mapping = {
+        # Format: (start_class_inclusive, end_class_inclusive): count_value
+        (1, 3): 1,  # Classes 1-3 correspond to count 1
+        (4, 6): 2,  # Classes 4-6 correspond to count 2
+        (7, 9): 3   # Classes 7-9 correspond to count 3
+    }
+    
+    # Function to determine count from class label
+    def get_count_from_class(class_label):
+        for (start, end), count in class_to_count_mapping.items():
+            if start <= class_label + 1 <= end:
+                return count
+
+        raise ValueError(f"No class label found for label {class_label + 1}")
+    
+    # Get available count values from the mapping
+    available_counts = sorted(set(class_to_count_mapping.values()))
+    
+    print(f"Visualizing prototypes for topk (CountPIPNet with class-based count selection)...", flush=True)
+    print(f"Using class-to-count mapping: {class_to_count_mapping}")
+    print(f"Available counts: {available_counts}")
+    
+    dir = os.path.join(args.log_dir, foldername)
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    
+    # Setup tracking dictionaries
+    num_prototypes = net.module._num_prototypes
+    max_count = net.module._max_count
+    patchsize, skip = get_patch_size(args)
+    imgs = projectloader.dataset.imgs
+    
+    # Make sure the model is in evaluation mode
+    net.eval()
+    classification_weights = net.module._classification.weight
+    
+    # Determine prototype importance for CountPIPNet
+    if classification_weights.shape[1] > num_prototypes:
+        weights_reshaped = classification_weights.reshape(num_classes, num_prototypes, max_count)
+        # Sum across non-zero counts for each prototype
+        prototype_importance = weights_reshaped.sum(dim=2).max(dim=0)[0]
+    else:
+        # Fall back to standard method if weights aren't expanded
+        prototype_importance = torch.max(classification_weights, dim=0)[0]
+
+    # When visualizing pretraining prototypes, include all prototypes
+    if are_pretraining_prototypes:
+        prototype_importance = torch.ones_like(prototype_importance)
+
+    # Plot activation histograms if requested
+    if plot_histograms:
+        histogram_dir = os.path.join(dir, "activation_histograms")
+        os.makedirs(histogram_dir, exist_ok=True)
+        
+        plot_prototype_activations_histograms(
+            net=net,
+            dataloader=projectloader,
+            device=device,
+            output_dir=histogram_dir,
+            only_important_prototypes=not are_pretraining_prototypes,
+            importance_threshold=1e-3,
+            is_count_pipnet=True,
+        )
+
+    if verbose:
+        # Debug information
+        with torch.no_grad():
+            print(f"Detected model type: CountPIPNet with max_count={max_count}")
+            print(f"Visualizing {'pretraining' if are_pretraining_prototypes else 'trained'} prototypes")
+            print(f"Examples per count group: {k}")
+
+            xs, ys = next(iter(projectloader))
+            xs, ys = xs.to(device), ys.to(device)
+            
+            # Run the model - inference should be False to get raw counts
+            pfs, pooled, out = net(xs, inference=False)
+
+            pooled = pooled.squeeze(0)
+            pfs = pfs.squeeze(0)
+            
+            # Print basic shape information
+            print(f"Pooled shape: {pooled.shape}, min: {pooled.min().item()}, max: {pooled.max().item()}")
+            print(f"Feature maps shape: {pfs.shape}")
+            print(f"Non-zero pooled values: {(pooled > 0.1).sum().item()} out of {pooled.numel()}")
+            
+            # Show pooled values
+            print("Pooled values (counts):", [round(v, 4) for v in pooled.tolist()])
+            
+            # Handle classification weights correctly for CountPIPNet
+            if classification_weights.shape[1] > num_prototypes:
+                print(f"Classification weights shape: {classification_weights.shape} (expanded)")
+            else:
+                print(f"Classification weights shape: {classification_weights.shape} (not expanded)")
+            
+            if not are_pretraining_prototypes:
+                print("Max classification weight per prototype:", [round(v, 4) for v in prototype_importance.tolist()])
+                print("Prototypes with weight > 1e-3:", (prototype_importance > 1e-3).sum().item())
+                
+                # Show which specific prototypes are being used
+                used_protos = torch.where(prototype_importance > 1e-3)[0].tolist()
+                print("Prototype indices with weight > 1e-3:", used_protos)
+            else:
+                print("Visualizing all prototypes (ignoring classification weights during pretraining)")
+
+    # Create feature maps directory if needed
+    if visualize_prototype_maps:
+        feature_maps_dir = os.path.join(dir, "feature_maps")
+        os.makedirs(feature_maps_dir, exist_ok=True)
+    
+    # Initialize top-k buffer for each prototype and count group
+    # We'll maintain k examples with highest activation for each prototype and count
+    topk_storage = {}
+    for p in range(num_prototypes):
+        if are_pretraining_prototypes or prototype_importance[p] > 1e-3:
+            topk_storage[p] = {}
+            for count in available_counts:
+                # Initialize with empty lists that can hold up to k items
+                topk_storage[p][count] = []
+    
+    # Show progress on progress bar
+    img_iter = tqdm(enumerate(projectloader),
+                    total=len(projectloader),
+                    desc='Single-pass processing for class-based count selection',
+                    ncols=0)
+    
+    abstained = 0
+    
+    # Single pass through the dataset
+    for i, (xs, ys) in img_iter:
+        xs, ys = xs.to(device), ys.to(device)
+        
+        with torch.no_grad():
+            # Get model outputs
+            proto_features, pooled_counts, out = net(xs, inference=False)
+            
+            # Check if model abstained
+            outmax = torch.amax(out, dim=1)[0]
+            if outmax.item() == 0.:
+                abstained += 1
+            
+            # Get image path
+            img_path = imgs[i]
+            if isinstance(img_path, tuple) or isinstance(img_path, list):
+                img_path = img_path[0]
+            
+            # Get the class label and determine the count group
+            class_label = ys.item()
+            count_group = get_count_from_class(class_label)
+            
+            # Skip if not in our available counts
+            if count_group not in available_counts:
+                continue
+                
+            # Process each prototype
+            for p in topk_storage.keys():
+                # Get the count for this prototype (for reference, not used for grouping)
+                model_count = pooled_counts.squeeze(0)[p].item()
+                
+                # Skip processing if activation is very low
+                if model_count < 0.01:
+                    continue
+                
+                # Get the prototype feature map
+                feature_map = proto_features.squeeze(0)[p].clone().cpu()
+                
+                # Find the location of maximum activation
+                max_h, h_idx = torch.max(feature_map, dim=0)
+                max_w, w_idx = torch.max(max_h, dim=0)
+                h_idx = h_idx[w_idx].item()
+                w_idx = w_idx.item()
+                
+                # Calculate patch coordinates
+                h_coor_min, h_coor_max, w_coor_min, w_coor_max = get_img_coordinates(
+                    args.image_size, proto_features.shape, patchsize, skip, h_idx, w_idx
+                )
+                
+                # Check if this image should be in the top-k for this prototype and count group
+                topk_list = topk_storage[p][count_group]
+                
+                # If we haven't collected k examples yet, or this activation is higher than the lowest in our collection
+                if len(topk_list) < k or model_count > topk_list[-1][0]:
+                    # Only now we load and process the image since it's a candidate for top-k
+                    image = transforms.Resize(size=(args.image_size, args.image_size))(Image.open(img_path))
+                    img_tensor = transforms.ToTensor()(image).unsqueeze_(0)
+                    img_tensor_patch = img_tensor[0, :, h_coor_min:h_coor_max, w_coor_min:w_coor_max].clone().cpu()
+                    
+                    # Full image data package to store
+                    img_data = {
+                        'index': i,
+                        'image_path': img_path,
+                        'class_label': class_label,
+                        'count_group': count_group,
+                        'model_count': model_count,
+                        'coords': (h_coor_min, h_coor_max, w_coor_min, w_coor_max),
+                        'feature_map': feature_map,
+                        'h_idx': h_idx,
+                        'w_idx': w_idx,
+                        'image_tensor': img_tensor.squeeze(0).clone().cpu(),
+                        'patch_tensor': img_tensor_patch
+                    }
+                    
+                    # Update the top-k list
+                    if len(topk_list) < k:
+                        topk_list.append((model_count, img_data))
+                        # Sort by model_count using a key function
+                        topk_list.sort(key=lambda x: x[0], reverse=True)
+                    else:
+                        # Replace the lowest scoring example
+                        topk_list[-1] = (model_count, img_data)
+                        # Sort by model_count using a key function
+                        topk_list.sort(key=lambda x: x[0], reverse=True)
+    
+    print("Abstained:", abstained, flush=True)
+    
+    # Extract just the image data from our sorted collections
+    prototype_selected_images = {}
+    for p in topk_storage.keys():
+        prototype_selected_images[p] = []
+        for count in available_counts:
+            # Extract the img_data part, discarding the score used for sorting
+            prototype_selected_images[p].extend([item[1] for item in topk_storage[p][count]])
+    
+    # Find prototypes without any examples
+    prototypes_not_used = []
+    for p, images in prototype_selected_images.items():
+        if len(images) == 0:
+            prototypes_not_used.append(p)
+    
+    print(f"{len(prototypes_not_used)} prototypes do not have any examples. Will be ignored in visualization.")
+    
+    # Create prototype visualizations uniformly sampled across count groups
+    all_tensors = []
+    tensors_per_prototype = {p: [] for p in prototype_selected_images.keys()}
+    saved = {p: 0 for p in prototype_selected_images.keys()}
+
+    for p, images in prototype_selected_images.items():
+        if p in prototypes_not_used:
+            continue
+        
+        # Group by count
+        count_groups = {}
+        for img_data in images:
+            count = img_data['count_group']
+            if count not in count_groups:
+                count_groups[count] = []
+            count_groups[count].append(img_data)
+        
+        # Sample uniformly across count groups
+        uniform_samples = []
+        if len(count_groups) > 0:
+            # Calculate samples per count group
+            samples_per_group = k // len(count_groups)
+            extra_samples = k % len(count_groups)
+            
+            # Collect samples from each count group
+            for count, count_images in sorted(count_groups.items()):
+                # Sort by activation score
+                sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
+                # Take samples_per_group + 1 extra if needed
+                samples_to_take = samples_per_group + (1 if extra_samples > 0 else 0)
+                extra_samples -= 1 if extra_samples > 0 else 0
+                
+                # Add samples from this count group
+                uniform_samples.extend(sorted_images[:min(samples_to_take, len(sorted_images))])
+        
+        # If we don't have enough samples, add more from any group
+        if len(uniform_samples) < k:
+            # Collect all unused images
+            unused_images = []
+            for count, count_images in count_groups.items():
+                # Sort by activation score
+                sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
+                # Find the cutoff point for this group
+                samples_to_take = samples_per_group + (1 if count in list(sorted(count_groups.keys()))[:extra_samples] else 0)
+                # Add unused images
+                if len(sorted_images) > samples_to_take:
+                    unused_images.extend(sorted_images[samples_to_take:])
+            
+            # Sort unused images by activation score
+            unused_images.sort(key=lambda x: x['model_count'], reverse=True)
+            # Add as many as needed to reach k
+            uniform_samples.extend(unused_images[:min(k - len(uniform_samples), len(unused_images))])
+        
+        # Ensure we have at most k samples
+        uniform_samples = uniform_samples[:k]
+        
+        # Sort the final samples by activation score
+        uniform_samples.sort(key=lambda x: x['model_count'], reverse=True)
+        
+        # Add to the tensor collection
+        for img_data in uniform_samples:
+            saved[p] += 1
+            tensors_per_prototype[p].append(img_data['patch_tensor'])
+        
+        # Add text next to each topk-grid
+        if len(uniform_samples) > 0:
+            img_data = uniform_samples[0]  # Use first image to get patch size
+            patch_shape = img_data['patch_tensor'].shape
+            
+            text = "P " + str(p)
+            txtimage = Image.new("RGB", (patch_shape[1], patch_shape[2]), (0, 0, 0))
+            draw = D.Draw(txtimage)
+            draw.text((patch_shape[1]//2, patch_shape[2]//2), text, anchor='mm', fill="white")
+            txttensor = transforms.ToTensor()(txtimage)
+            tensors_per_prototype[p].append(txttensor)
+            
+            # Save top-k image patches in grid
+            try:
+                grid = torchvision.utils.make_grid(tensors_per_prototype[p], nrow=k+1, padding=1)
+                torchvision.utils.save_image(grid, os.path.join(dir, f"grid_topk_{p}.png"))
+                if saved[p] >= k:
+                    all_tensors.extend(tensors_per_prototype[p])
+            except Exception as e:
+                print(f"Error creating grid for prototype {p}: {e}")
+
+    # Create a grid with all prototypes
+    if len(all_tensors) > 0:
+        try:
+            grid = torchvision.utils.make_grid(all_tensors, nrow=k+1, padding=1)
+            torchvision.utils.save_image(grid, os.path.join(dir, "grid_topk_all.png"))
+        except Exception as e:
+            print(f"Error creating combined grid: {e}")
+    else:
+        print("Prototypes not visualized. Try to pretrain longer.", flush=True)
+        
+    # Create feature map visualizations with additional count information
+    if visualize_prototype_maps:
+        import matplotlib.pyplot as plt
+        import matplotlib.cm as cm
+        import numpy as np
+        from scipy.ndimage import zoom
+        
+        print("Creating prototype feature map visualizations with count information...", flush=True)
+        
+        for p, images in prototype_selected_images.items():
+            if p in prototypes_not_used or len(images) == 0:
+                continue
+            
+            # Create a prototype-specific directory
+            proto_feature_dir = os.path.join(feature_maps_dir, f"prototype_{p}")
+            os.makedirs(proto_feature_dir, exist_ok=True)
+            
+            # Group by count
+            count_groups = {}
+            for img_data in images:
+                count = img_data['count_group']
+                if count not in count_groups:
+                    count_groups[count] = []
+                count_groups[count].append(img_data)
+            
+            # Select best example for each count group
+            selected_images = []
+            for count, count_images in sorted(count_groups.items()):
+                if len(count_images) > 0:
+                    # Sort by model's count value to get the best example
+                    sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
+                    selected_images.append(sorted_images[0])
+            
+            # Limit to max_feature_maps_per_prototype
+            selected_images = selected_images[:max_feature_maps_per_prototype]
+            
+            # Create visualizations for selected samples
+            for i, img_data in enumerate(selected_images):
+                # Extract data
+                img_path = img_data['image_path']
+                img_tensor = img_data['image_tensor']
+                coords = img_data['coords']
+                feature_map = img_data['feature_map']
+                count_group = img_data['count_group']
+                model_count = img_data['model_count']
+                class_label = img_data['class_label']
+                h_idx = img_data['h_idx']
+                w_idx = img_data['w_idx']
+                
+                # Debug the feature map vs. count
+                feature_map_np = feature_map.numpy()
+                feature_map_sum = feature_map_np.sum()
+                feature_map_max = feature_map_np.max()
+                feature_map_mean = feature_map_np.mean()
+                
+                # Create a filename based on the prototype and count
+                base_filename = f"proto_{p}_count_{count_group}_model_count_{model_count:.1f}_class_{class_label}"
+                
+                # Save debug information
+                debug_info = f"""Prototype {p} Count Statistics:
+Count Group (from class): {count_group}
+Model Count Value: {model_count:.3f}
+Class Label: {class_label}
+Feature map shape: {feature_map_np.shape}
+Feature map sum: {feature_map_sum:.3f} 
+Feature map max value: {feature_map_max:.3f}
+Feature map mean: {feature_map_mean:.3f}
+"""
+                with open(os.path.join(proto_feature_dir, f"{base_filename}_debug.txt"), 'w') as f:
+                    f.write(debug_info)
+                
+                # Convert image tensor to numpy for plotting
+                img_np = img_tensor.permute(1, 2, 0).numpy()
+                
+                # Save the original image with patch rectangle
+                plt.figure(figsize=(10, 8))
+                plt.imshow(img_np)
+                h_min, h_max, w_min, w_max = coords
+                rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
+                                    fill=False, edgecolor='yellow', linewidth=2)
+                plt.gca().add_patch(rect)
+                plt.axis('off')
+                plt.title(f"Prototype {p} - Count: {count_group} (Model Count: {model_count:.1f}, Class: {class_label})")
+                plt.tight_layout()
+                plt.savefig(os.path.join(proto_feature_dir, f"{base_filename}_original.png"), 
+                            bbox_inches='tight', dpi=150)
+                plt.close()
+                
+                # Create side-by-side visualization with original and heatmap
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+                
+                # Show original image on the left
+                ax1.imshow(img_np)
+                rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
+                                    fill=False, edgecolor='yellow', linewidth=2)
+                ax1.add_patch(rect)
+                ax1.set_title("Original Image")
+                ax1.axis('off')
+                
+                # Show feature map on the right
+                heatmap = ax2.imshow(feature_map_np, cmap='viridis')
+                ax2.scatter(w_idx, h_idx, marker='x', color='red', s=100)
+                ax2.set_title("Feature Map Heatmap")
+                ax2.axis('off')
+                fig.colorbar(heatmap, ax=ax2, label="Activation")
+                
+                plt.suptitle(f"Prototype {p} - Count: {count_group} (Model Count: {model_count:.1f})")
+                plt.tight_layout()
+                plt.savefig(os.path.join(proto_feature_dir, f"{base_filename}_feature_map.png"), 
+                            bbox_inches='tight', dpi=150)
+                plt.close()
+                
+                # Create overlay visualization
+                plt.figure(figsize=(10, 8))
+                plt.imshow(img_np)
+                
+                # Resize feature map to match image dimensions
+                zoom_y = img_np.shape[0] / feature_map_np.shape[0]
+                zoom_x = img_np.shape[1] / feature_map_np.shape[1]
+                resized_feature_map = zoom(feature_map_np, (zoom_y, zoom_x))
+                
+                # Create a masked version of the feature map for cleaner overlay
+                mask = resized_feature_map > 0.1  # Only show activations above threshold
+                overlay = np.zeros((*resized_feature_map.shape, 4))  # RGBA
+                
+                # Create colormap
+                cmap = cm.get_cmap('viridis')
+                
+                # Fill overlay with colors from colormap based on activation values
+                for y in range(resized_feature_map.shape[0]):
+                    for x in range(resized_feature_map.shape[1]):
+                        if mask[y, x]:
+                            color = cmap(resized_feature_map[y, x])
+                            overlay[y, x] = (*color[:3], 0.7)  # RGB with 0.7 alpha
+                
+                plt.imshow(overlay, alpha=0.7)
+                rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
+                                    fill=False, edgecolor='yellow', linewidth=2)
+                plt.gca().add_patch(rect)
+                plt.title(f"Prototype {p} - Count: {count_group} (Model Count: {model_count:.1f})")
+                plt.axis('off')
+                plt.tight_layout()
+                plt.savefig(os.path.join(proto_feature_dir, f"{base_filename}_overlay.png"), 
+                            bbox_inches='tight', dpi=150)
+                plt.close()
+    
+    # Only return the indices and scores for backward compatibility
+    topks = {}
+    for p, images in prototype_selected_images.items():
+        if p not in prototypes_not_used:
+            topks[p] = [(img_data['index'], img_data['model_count']) for img_data in images]
     
     return topks
 
