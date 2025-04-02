@@ -12,38 +12,99 @@ from sklearn.model_selection import train_test_split
 # Add this new import
 from kornia.augmentation import RandomGaussianNoise
 
-def get_data(args: argparse.Namespace): 
+from pathlib import Path
+
+def get_data(args: argparse.Namespace, basepath: Path = Path('./')): 
     """
     Load the proper dataset based on the parsed arguments
+    
+    Args:
+        args: Namespace containing dataset configuration
+        basepath: Base path for all dataset directories (default: current directory)
+    
+    Returns:
+        Dataset loaders and related information
     """
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     np.random.seed(args.seed)
-    if args.dataset =='CUB-200-2011':     
-        return get_birds(True, './data/CUB_200_2011/dataset/train_crop', './data/CUB_200_2011/dataset/train', './data/CUB_200_2011/dataset/test_crop', args.image_size, args.seed, args.validation_size, './data/CUB_200_2011/dataset/train', './data/CUB_200_2011/dataset/test_full')
+    
+    if args.dataset == 'CUB-200-2011':     
+        return get_birds(
+            True, 
+            basepath / 'data/CUB_200_2011/dataset/train_crop', 
+            basepath / 'data/CUB_200_2011/dataset/train', 
+            basepath / 'data/CUB_200_2011/dataset/test_crop', 
+            args.image_size, args.seed, args.validation_size, 
+            basepath / 'data/CUB_200_2011/dataset/train', 
+            basepath / 'data/CUB_200_2011/dataset/test_full'
+        )
     if args.dataset == 'pets':
-        return get_pets(True, './data/PETS/dataset/train','./data/PETS/dataset/train','./data/PETS/dataset/test', args.image_size, args.seed, args.validation_size)
+        return get_pets(
+            True, 
+            basepath / 'data/PETS/dataset/train',
+            basepath / 'data/PETS/dataset/train',
+            basepath / 'data/PETS/dataset/test', 
+            args.image_size, args.seed, args.validation_size
+        )
     if args.dataset == 'partimagenet': #use --validation_size of 0.2
-        return get_partimagenet(True, './data/partimagenet/dataset/all', './data/partimagenet/dataset/all', None, args.image_size, args.seed, args.validation_size) 
+        return get_partimagenet(
+            True, 
+            basepath / 'data/partimagenet/dataset/all', 
+            basepath / 'data/partimagenet/dataset/all', 
+            None, 
+            args.image_size, args.seed, args.validation_size
+        ) 
     if args.dataset == 'CARS':
-        return get_cars(True, './data/cars/dataset/train', './data/cars/dataset/train', './data/cars/dataset/test', args.image_size, args.seed, args.validation_size)
+        return get_cars(
+            True, 
+            basepath / 'data/cars/dataset/train', 
+            basepath / 'data/cars/dataset/train', 
+            basepath / 'data/cars/dataset/test', 
+            args.image_size, args.seed, args.validation_size
+        )
     if args.dataset == 'grayscale_example':
-        return get_grayscale(True, './data/train', './data/train', './data/test', args.image_size, args.seed, args.validation_size)
+        return get_grayscale(
+            True, 
+            basepath / 'data/train', 
+            basepath / 'data/train', 
+            basepath / 'data/test', 
+            args.image_size, args.seed, args.validation_size
+        )
     # Added new dataset options for our custom datasets
     if args.dataset == 'geometric_shapes':
-        return get_geometric_shapes(True, './data/geometric_shapes/dataset/train', './data/geometric_shapes/dataset/train', './data/geometric_shapes/dataset/test', args.image_size, args.seed, args.validation_size)
+        return get_geometric_shapes(
+            True, 
+            basepath / 'data/geometric_shapes/dataset/train', 
+            basepath / 'data/geometric_shapes/dataset/train', 
+            basepath / 'data/geometric_shapes/dataset/test', 
+            args.image_size, args.seed, args.validation_size
+        )
     if args.dataset == 'geometric_shapes_gaussian_noise':
-        return get_geometric_shapes_with_gaussian_noise(True, './data/geometric_shapes_no_noise/dataset/train', './data/geometric_shapes_no_noise/dataset/train', './data/geometric_shapes_no_noise/dataset/test', args.image_size, args.seed, args.validation_size)
+        return get_geometric_shapes_with_gaussian_noise(
+            True, 
+            basepath / 'data/geometric_shapes_no_noise/dataset/train', 
+            basepath / 'data/geometric_shapes_no_noise/dataset/train', 
+            basepath / 'data/geometric_shapes_no_noise/dataset/test', 
+            args.image_size, args.seed, args.validation_size
+        )
     if args.dataset == 'mnist_counting':
-        return get_mnist_counting(True, './data/mnist_counting/dataset/train', './data/mnist_counting/dataset/train', './data/mnist_counting/dataset/test', args.image_size, args.seed, args.validation_size)
+        return get_mnist_counting(
+            True, 
+            basepath / 'data/mnist_counting/dataset/train', 
+            basepath / 'data/mnist_counting/dataset/train', 
+            basepath / 'data/mnist_counting/dataset/test', 
+            args.image_size, args.seed, args.validation_size
+        )
+    
     raise Exception(f'Could not load data set, data set "{args.dataset}" not found!')
 
-def get_dataloaders(args: argparse.Namespace, device):
+def get_dataloaders(args: argparse.Namespace, device, basepath: Path = Path('./')):
     """
     Get data loaders
     """
     # Obtain the dataset
-    trainset, trainset_pretraining, trainset_normal, trainset_normal_augment, projectset, testset, testset_projection, classes, num_channels, train_indices, targets = get_data(args)
+    trainset, trainset_pretraining, trainset_normal, trainset_normal_augment, projectset, testset, testset_projection, classes, num_channels, train_indices, targets = get_data(args, basepath)
     
     # Determine if GPU should be used
     cuda = not args.disable_cuda and torch.cuda.is_available()

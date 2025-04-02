@@ -1,5 +1,5 @@
 data/
-augmentation_viz/
+visualizations/
 runs/
 
 # Mac OS-specific storage files

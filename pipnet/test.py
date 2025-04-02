@@ -53,7 +53,7 @@ def eval_pipnet(net,
         
         with torch.no_grad():
             if enforce_weight_sparsity:
-                print('(TEST) Setting small weights to zero...')
+                # print('(TEST) Setting small weights to zero...')
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
             # Use the model to classify this batch of input data
             _, pooled, out = net(xs, inference=True)

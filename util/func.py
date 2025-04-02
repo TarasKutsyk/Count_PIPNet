@@ -7,7 +7,7 @@ def get_patch_size(args):
     else:
         num_stages = args.num_stages
         if num_stages in [1, 2, 3]:
-            patchsize = 16
+            patchsize = 32
         else:
             patchsize = 32
             

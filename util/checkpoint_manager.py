@@ -299,4 +299,4 @@ class CheckpointManager:
             dict: Information about loaded checkpoint including success status, accuracy and epoch
         """
         return self.load_trained_checkpoint(net, optimizer_net, optimizer_classifier, 
-                                        checkpoint_name='net_trained_best')
+                                            checkpoint_name='net_trained_best')

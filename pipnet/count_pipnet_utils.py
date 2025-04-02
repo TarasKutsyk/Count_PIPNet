@@ -360,3 +360,57 @@ class BilinearIntermediate(nn.Module):
         
         # Apply bilinear transformation
         return self.W(embedded) * self.V(embedded)
+
+class LinearFull(nn.Module):
+    """
+    A full linear intermediate layer that maps prototype counts to an expanded dimension
+    using the full parameter space (num_prototypes * max_count parameters).
+    Unlike LinearIntermediate which only uses max_count parameters per prototype,
+    this version allows for more complex interactions between different prototypes.
+    """
+    def __init__(self, num_prototypes, max_count, expanded_dim=None):
+        """
+        Args:
+            num_prototypes: Number of prototypes in the model
+            max_count: Maximum count value to consider
+            expanded_dim: Size of the expanded feature space (defaults to num_prototypes * max_count)
+        """
+        super().__init__()
+        self.num_prototypes = num_prototypes
+        self.max_count = max_count
+        self.expanded_dim = num_prototypes * max_count if expanded_dim is None else expanded_dim
+        
+        # Full linear projection from prototype counts to expanded dimension
+        self.linear = nn.Linear(num_prototypes, self.expanded_dim, bias=False)
+        
+        # Initialize with a structured pattern that's more interpretable
+        with torch.no_grad():
+            # First zero out weights
+            self.linear.weight.zero_()
+            
+            # Then initialize with a block-diagonal-like pattern
+            # but with full connectivity to allow learning more complex relationships
+            for p in range(num_prototypes):
+                for c in range(max_count):
+                    idx = p * max_count + c
+                    # Primary connection - stronger weight to corresponding prototype
+                    self.linear.weight[idx, p] = c + 1  # Scale by count value
+                    
+                    # Secondary connections - weaker weights to other prototypes
+                    # This allows the model to learn interactions while still maintaining
+                    # some interpretable structure
+                    for other_p in range(num_prototypes):
+                        if other_p != p:
+                            self.linear.weight[idx, other_p] = 0.1 * (c + 1) / num_prototypes
+    
+    def forward(self, x):
+        """
+        Forward pass - maps count values to expanded feature space.
+        
+        Args:
+            x: Input tensor of counts [batch_size, num_prototypes]
+            
+        Returns:
+            Expanded tensor [batch_size, expanded_dim]
+        """
+        return self.linear(x)

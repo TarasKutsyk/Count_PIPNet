@@ -25,8 +25,8 @@ CONFIG = {
     'output_dir': './data/geometric_shapes_no_noise/dataset',
 
     'img_size': 192,                          # Size of output images (square)
-    'train_samples_per_class': 100,           # Number of training samples per class
-    'test_samples_per_class': 25,             # Number of test samples per class
+    'train_samples_per_class': 400,           # Number of training samples per class
+    'test_samples_per_class': 100,             # Number of test samples per class
     'seed': 42,                               # Random seed for reproducibility
     
     # Object parameters - based on estimated receptive field size

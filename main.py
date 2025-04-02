@@ -6,10 +6,10 @@ from util.func import init_weights_xavier
 from util.checkpoint_manager import CheckpointManager
 from pipnet.train import train_pipnet
 from pipnet.test import eval_pipnet
-from util.eval_cub_csv import eval_prototypes_cub_parts_csv, get_topk_cub, get_proto_patches_cub
 import torch
 from util.vis_pipnet import visualize, visualize_topk
 from util.visualize_prediction import vis_pred, vis_pred_experiments
+from util.selective_loading import load_shared_backbone
 import sys, os
 import random
 import numpy as np
@@ -23,8 +23,6 @@ from pipnet.count_pipnet import get_count_network
 # Add this at the top of main.py
 import hashlib
 import json
-import os
-import pickle
 
 def get_pretraining_config_hash(args):
     """Generate a unique identifier for pretraining configuration"""
@@ -42,6 +40,9 @@ def get_pretraining_config_hash(args):
     return config_hash, pretraining_params
 
 def run_pipnet(args=None):
+    """
+    Modified run_pipnet function to support shared backbone model loading.
+    """
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     random.seed(args.seed)
@@ -113,40 +114,94 @@ def run_pipnet(args=None):
         net, num_prototypes = get_pipnet(len(classes), args)
 
     net = net.to(device=device)
-    net = nn.DataParallel(net, device_ids = device_ids)
+    net = nn.DataParallel(net, device_ids=device_ids)
     
     optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(net, args)   
 
-    if resume_training:
-        print("Attempting to resume training from last checkpoint", flush=True)
-        resume_info = checkpoint_manager.load_trained_checkpoint(net, optimizer_net, optimizer_classifier)
-        
-        if resume_info['success']:
-            # Skip pretraining if resuming
-            args.epochs_pretrain = 0
-            # Get the starting epoch if available
-            if resume_info['epoch'] is not None:
-                start_epoch = resume_info['epoch'] + 1
-                print(f"Resuming training from epoch {start_epoch}", flush=True)
-            else:
-                print("Resuming training from checkpoint without epoch information", flush=True)
-    
-    # If we're not resuming or resume failed, load pretrained checkpoint or initialize weights
-    if not resume_training or not resume_info.get('success', False):
-        with torch.no_grad():
-            checkpoint_loaded = checkpoint_manager.load_pretrained_checkpoint(net, optimizer_net)
+    # Check for shared pretrained backbone
+    shared_pretrained_loaded = False
+    if hasattr(args, 'shared_pretrained_dir') and args.shared_pretrained_dir:
+        try:
+            shared_pretrained_result = load_shared_backbone(
+                net, args.shared_pretrained_dir, verbose=True)
+            shared_pretrained_loaded = shared_pretrained_result['success']
             
-            if not checkpoint_loaded:
-                # Initialize weights
-                net.module._add_on.apply(init_weights_xavier)
-                torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
-                if args.bias:
-                    torch.nn.init.constant_(net.module._classification.bias, val=0.)
-                torch.nn.init.constant_(net.module._multiplier, val=2.)
-                net.module._multiplier.requires_grad = False
-                print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
-            else:
+            if shared_pretrained_loaded:
+                print(f"Successfully loaded shared pretrained backbone")
+                print(f"Loaded {shared_pretrained_result['loaded_params']}/{shared_pretrained_result['total_backbone_params']} backbone parameters")
+                
+                # Skip pretraining since we've loaded the backbone
                 args.epochs_pretrain = 0
+            else:
+                print(f"Failed to load shared pretrained backbone")
+        except Exception as e:
+            print(f"Error loading shared pretrained backbone: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Only try regular checkpoints if shared pretrained wasn't loaded
+    if not shared_pretrained_loaded:
+        if resume_training:
+            print("Attempting to resume training from last checkpoint", flush=True)
+            resume_info = checkpoint_manager.load_trained_checkpoint(net, optimizer_net, optimizer_classifier)
+            
+            if resume_info['success']:
+                # Skip pretraining if resuming
+                args.epochs_pretrain = 0
+                # Get the starting epoch if available
+                if resume_info['epoch'] is not None:
+                    start_epoch = resume_info['epoch'] + 1
+                    print(f"Resuming training from epoch {start_epoch}", flush=True)
+                else:
+                    print("Resuming training from checkpoint without epoch information", flush=True)
+        
+        # If we're not resuming or resume failed, load pretrained checkpoint or initialize weights
+        if not resume_training or not resume_info.get('success', False):
+            with torch.no_grad():
+                checkpoint_loaded = checkpoint_manager.load_pretrained_checkpoint(net, optimizer_net)
+                
+                if not checkpoint_loaded:
+                    # Initialize weights
+                    print("Initializing model weights", flush=True)
+                    net.module._add_on.apply(init_weights_xavier)
+                    torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
+                    if args.bias:
+                        torch.nn.init.constant_(net.module._classification.bias, val=0.)
+                    torch.nn.init.constant_(net.module._classification.normalization_multiplier, val=2.)
+                    net.module._classification.normalization_multiplier.requires_grad = False
+                    print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
+                else:
+                    print("Loaded pretrained checkpoint from standard location", flush=True)
+                    args.epochs_pretrain = 0
+
+    # If shared backbone was loaded or standard checkpoint failed, but we're using shared_pretrained_dir,
+    # initialize the non-backbone parts of the model
+    if shared_pretrained_loaded or (hasattr(args, 'shared_pretrained_dir') and args.shared_pretrained_dir):
+        print("Initializing non-backbone components", flush=True)
+        torch.nn.init.normal_(net.module._classification.weight, mean=1.0, std=0.1)
+        if args.bias:
+            torch.nn.init.constant_(net.module._classification.bias, val=0.)
+        torch.nn.init.constant_(net.module._multiplier, val=2.)
+        net.module._multiplier.requires_grad = False
+        
+    if hasattr(net.module, '_intermediate') and net.module._intermediate is not None:
+        # Print information about the intermediate layer type
+        intermediate_type = type(net.module._intermediate).__name__
+        print(f"Found intermediate layer of type {intermediate_type}")
+        
+        # For OneHotEncoder, no initialization needed as it's parameter-free
+        if intermediate_type == 'OneHotEncoder':
+            print(f"OneHotEncoder doesn't require initialization", flush=True)
+        # For LinearFull, LinearIntermediate, BilinearIntermediate, etc., 
+        # the __init__ already contains custom initialization
+        elif any(t in intermediate_type for t in ['Linear', 'Bilinear']):
+            print(f"Using {intermediate_type}'s built-in custom initialization", flush=True)
+        # For any other types, apply Xavier initialization as fallback
+        elif hasattr(net.module._intermediate, 'apply'):
+            print(f"Applying Xavier initialization to {intermediate_type}", flush=True)
+            net.module._intermediate.apply(init_weights_xavier)
+
+        print("Classification layer initialized with mean", torch.mean(net.module._classification.weight).item(), flush=True)
     
     # Define classification loss function and scheduler
     criterion = nn.NLLLoss(reduction='mean').to(device)
@@ -233,14 +288,14 @@ def run_pipnet(args=None):
                     train_info['align_loss_raw'], train_info['tanh_loss_raw'], "n.a.",  # Classification loss is n.a.
                     train_info['align_loss_weighted'], train_info['tanh_loss_weighted'], "n.a.")
     
-    if args.state_dict_dir_net == '' and args.epochs_pretrain > 0:
+    if args.epochs_pretrain > 0 and not resume_training:
         net.eval()
         checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
 
-    with torch.no_grad():
-        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                               k=10, are_pretraining_prototypes=True)
-        
+        with torch.no_grad():
+            topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
+                                   k=10, are_pretraining_prototypes=True)
+            
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
     if not resume_training or not resume_info['success']:
@@ -259,15 +314,15 @@ def run_pipnet(args=None):
     frozen = True
     lrs_net = []
     lrs_classifier = []
-   
+
+    # Initial finetuning phase
+    epochs_to_finetune = args.epochs_finetune
+    args.freeze_epochs += epochs_to_finetune
+    
     for epoch in range(1, args.epochs + 1):
         # Special handling for CountPIPNet without STE
         count_pipnet_no_ste = (hasattr(args, 'model') and args.model == 'count_pipnet' and 
                                 not getattr(args, 'use_ste', False))
-        
-        # Initial finetuning phase
-        epochs_to_finetune = args.epochs_finetune
-        args.freeze_epochs += epochs_to_finetune
         
         if epoch <= epochs_to_finetune:
             print(f'Finetuning...')
@@ -319,7 +374,7 @@ def run_pipnet(args=None):
             "frozen:", frozen if not count_pipnet_no_ste else "N/A (CountPIPNet without STE)", 
             flush=True)    
         if args.enforce_weight_sparsity and (epoch==args.epochs or epoch%30==0) and args.epochs>1:
-            print('(MAIN) Setting small weights to zero')
+            # print('(MAIN) Setting small weights to zero')
             with torch.no_grad():
                 torch.set_printoptions(profile="full")
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 0.001, min=0.)) 
@@ -355,7 +410,7 @@ def run_pipnet(args=None):
             
         with torch.no_grad():
             # Save the checkpoint
-            checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch)
+            # checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch)
 
             # Save the best checkpoint if this is the best model so far
             checkpoint_manager.save_best_checkpoint(net, optimizer_net, optimizer_classifier, 
@@ -372,20 +427,21 @@ def run_pipnet(args=None):
     net.eval()
     if args.epochs > 1:
         checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
-        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
-        # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
+        
+    topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+    # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
 
-        # Now load and visualize the best model's prototypes
-        print("\nLoading best model for prototype visualization...", flush=True)
-        best_model_info = checkpoint_manager.load_best_checkpoint(net, optimizer_net, optimizer_classifier)
-        if best_model_info['success']:
-            print(f"Loaded best model from epoch {best_model_info['epoch']} with accuracy {best_model_info['accuracy']:.4f} for visualization", flush=True)
-            # Create a dedicated folder for the best model prototypes
-            best_model_folder = f'visualised_prototypes_topk_best_model_epoch{best_model_info["epoch"]}'
-            topks_best = visualize_topk(net, projectloader, len(classes), device, best_model_folder, args)
-            print(f"Best model prototypes visualized in folder: {best_model_folder}", flush=True)
-        else:
-            print("Failed to load best model for prototype visualization", flush=True)
+    # Now load and visualize the best model's prototypes
+    print("\nLoading best model for prototype visualization...", flush=True)
+    best_model_info = checkpoint_manager.load_best_checkpoint(net, optimizer_net, optimizer_classifier)
+    if best_model_info['success']:
+        print(f"Loaded best model from epoch {best_model_info['epoch']} with accuracy {best_model_info['accuracy']:.4f} for visualization", flush=True)
+        # Create a dedicated folder for the best model prototypes
+        best_model_folder = f'visualised_prototypes_topk_best_model_epoch{best_model_info["epoch"]}'
+        topks_best = visualize_topk(net, projectloader, len(classes), device, best_model_folder, args)
+        print(f"Best model prototypes visualized in folder: {best_model_folder}", flush=True)
+    else:
+        print("Failed to load best model for prototype visualization", flush=True)
 
     # # set weights of prototypes that are never really found in projection set to 0
     # set_to_zero = []
