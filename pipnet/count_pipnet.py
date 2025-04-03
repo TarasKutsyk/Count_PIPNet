@@ -134,7 +134,7 @@ class CountPIPNet(nn.Module):
     
 
     def get_prototype_importance(self, prototype_idx):
-        prototype_importance_per_class = self.get_prototype_importances_per_class(prototype_idx)
+        prototype_importance_per_class = self.get_prototype_importance_per_class(prototype_idx)
         
         # The total importance is the sum of all per-class importances
         return prototype_importance_per_class.sum().item()

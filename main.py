@@ -218,15 +218,15 @@ def run_pipnet(args=None):
     
     if net.module._num_classes == 2:
         # Create a csv log with additional loss component columns
-        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_f1', 
-                    'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 
+        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 
+                    'local_size_for_true_class', 'local_size_for_all_classes', 'prototypes_per_class', 'almost_nonzeros_pooled', 
                     'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch',
                     'align_loss_raw', 'tanh_loss_raw', 'class_loss_raw',
                     'align_loss_weighted', 'tanh_loss_weighted', 'class_loss_weighted')
     else:
         # Create a csv log with additional loss component columns
-        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 'test_top5_acc', 
-                    'almost_sim_nonzeros', 'local_size_all_classes', 'almost_nonzeros_pooled', 
+        log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc', 
+                    'local_size_for_true_class', 'local_size_for_all_classes', 'prototypes_per_class', 'almost_nonzeros_pooled', 
                     'num_nonzero_prototypes', 'mean_train_acc', 'mean_train_loss_during_epoch',
                     'align_loss_raw', 'tanh_loss_raw', 'class_loss_raw',
                     'align_loss_weighted', 'tanh_loss_weighted', 'class_loss_weighted')
@@ -241,8 +241,8 @@ def run_pipnet(args=None):
             param.requires_grad = True
         for param in net.module._classification.parameters():
             param.requires_grad = False
-        for param in net.module._intermediate.parameters():
-            param.requires_grad = False
+        # for param in net.module._intermediate.parameters():
+        #     param.requires_grad = False
         
         for param in params_to_freeze:
             param.requires_grad = True # can be set to False when you want to freeze more layers
@@ -333,8 +333,8 @@ def run_pipnet(args=None):
                 param.requires_grad = False
             for param in net.module._classification.parameters():
                 param.requires_grad = True
-            for param in net.module._intermediate.parameters():
-                param.requires_grad = True
+            # for param in net.module._intermediate.parameters():
+            #     param.requires_grad = True
             finetune = True
         else:
             finetune = False
@@ -354,8 +354,8 @@ def run_pipnet(args=None):
                     if epoch > args.freeze_epochs:
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
-                        for param in net.module._intermediate.parameters():
-                            param.requires_grad = True
+                        # for param in net.module._intermediate.parameters():
+                        #     param.requires_grad = True
                         for param in params_to_freeze:
                             param.requires_grad = True
                         for param in params_to_train:
@@ -371,8 +371,8 @@ def run_pipnet(args=None):
                             param.requires_grad = True
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
-                        for param in net.module._intermediate.parameters():
-                            param.requires_grad = True                            
+                        # for param in net.module._intermediate.parameters():
+                        #     param.requires_grad = True                            
                         for param in params_to_train:
                             param.requires_grad = True
                         for param in params_backbone:
@@ -402,8 +402,8 @@ def run_pipnet(args=None):
         # Evaluate model
         eval_info = eval_pipnet(net, testloader, epoch, device, log, enforce_weight_sparsity=args.enforce_weight_sparsity,
                                 args=args)
-        log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'], eval_info['top5_accuracy'], 
-            eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], 
+        log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'], 
+            eval_info['local_size_for_true_class'], eval_info['local_size_for_all_classes'], eval_info['prototypes_per_class'], 
             eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], 
             train_info['train_accuracy'], train_info['loss'],
             train_info['align_loss_raw'], train_info['tanh_loss_raw'], train_info['class_loss_raw'],
@@ -457,7 +457,7 @@ def run_pipnet(args=None):
     #             set_to_zero.append(prot)
     #     print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)
     #     eval_info = eval_pipnet(net, testloader, "notused"+str(args.epochs), device, log)
-    #     log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['top5_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
+    #     log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['local_size_for_true_class'], eval_info['prototypes_per_class'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
 
     # print("classifier weights: ", net.module._classification.weight, flush=True)
     # print("Classifier weights nonzero: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)

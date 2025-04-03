@@ -1,4 +1,3 @@
 [
-    "configs/full_linear.yaml",
-    "configs/identity.yaml"
+    "configs/linear_copy.yaml"
 ]

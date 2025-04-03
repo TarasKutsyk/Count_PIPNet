@@ -32,10 +32,10 @@ def eval_pipnet(net,
     cm = np.zeros((net.module._num_classes, net.module._num_classes), dtype=int)
 
     global_top1acc = 0.
-    global_top5acc = 0.
-    global_sim_anz = 0.
+    correct_class_local_size_mean = 0.
+    all_classes_local_size_mean = 0.
     global_anz = 0.
-    local_size_total = 0.
+    prototypes_per_class_total = 0.
     y_trues = []
     y_preds = []
     y_preds_classes = []
@@ -56,113 +56,93 @@ def eval_pipnet(net,
                 # print('(TEST) Setting small weights to zero...')
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
             # Use the model to classify this batch of input data
-            _, pooled, out = net(xs, inference=True)
+            _, pooled, out = net(xs, inference=not is_count_pipnet)
+            batch_size = xs.shape[0]
+            num_classes = out.shape[1]
+
             max_out_score, ys_pred = torch.max(out, dim=1)
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)),dim=1),dim=1)
 
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))
 
-            if is_count_pipnet and args.intermediate_layer != 'identity':
-                # Get the maximum count parameter from the model
-                max_count = net.module._max_count
+            if is_count_pipnet:
                 # Calculate the number of actual prototypes
                 num_raw_prototypes = net.module._num_prototypes
+                assert num_raw_prototypes == pooled.shape[1]
                 
-                # Reshape pooled to recover the original structure before flattening
-                reshaped_pooled = einops.rearrange(
-                    pooled, 
-                    'b (p c) -> b p c', 
-                    p=num_raw_prototypes, 
-                    c=max_count
-                ) # [batch_size, num_raw_prototypes, max_count]
-                
-                count_presence = reshaped_pooled.sum(dim=2) # [batch_size, num_raw_prototypes]
-                
-                # Reshape the classification weights to match the prototype-count structure
-                reshaped_weights = einops.rearrange(
-                    net.module._classification.weight,
-                    'classes (p c) -> classes p c',
-                    p=num_raw_prototypes,
-                    c=max_count
-                ) # [num_classes, num_raw_prototypes, max_count]
-                
-                # Extract weights for non-zero counts and sum them
-                nonzero_weights = reshaped_weights.sum(dim=2) # [num_classes, num_raw_prototypes]
-                
-                # Repeat for batch processing
-                repeated_weight = einops.repeat(
-                    nonzero_weights,
-                    'classes p -> classes b p',
-                    b=count_presence.shape[0]
-                ) # [num_classes, batch_size, num_raw_prototypes]
-                
-                # Count significant prototype activations weighted by class importance
+                prototype_to_class_weigths = [net.module.get_prototype_importance_per_class(i) for i in range(num_raw_prototypes)]
+                prototype_to_class_weigths = torch.stack(prototype_to_class_weigths, dim=0) # [num_raw_prototypes, num_classes]
 
-                # count_presence*repeated_weight is [num_classes, batch_size, num_raw_prototypes] shaped tensor
-                # indicating how much a given prototype contributes to a given class prediction on a given batch sample
+                assert prototype_to_class_weigths.shape[0] == num_raw_prototypes and \
+                       prototype_to_class_weigths.shape[1] == net.module._num_classes
 
-                sim_scores_anz = torch.count_nonzero(torch.gt(count_presence*repeated_weight, 1e-3).float(), dim=2).float()
-                # [num_classes, batch_size] <- how many significant prototype activations exist for each class and image combination.
-                
-                # Count prototypes that contribute to each class decision
-                weighted_contribution = einops.reduce(
-                    torch.relu((count_presence*repeated_weight)-1e-3),
-                    'classes b p -> classes b',
-                    'sum'
-                )
-                local_size = torch.count_nonzero(torch.gt(weighted_contribution, 0.).float(), dim=1).float() 
-                # [num_classes] <- how many images there are in the batch with non-zero evidence for each class 
-                
-                # Count activated prototypes per image (regardless of class)
-                almost_nz = torch.count_nonzero(torch.gt(count_presence, 1e-3).float(), dim=1).float() 
-                # [batch_size] - count of activated prototypes per image
-
-            else: # Original PIPNet code with more comments
+                # Compute the weighted prototype activations for each class
+                # First, rearrange to match the expected shape for broadcasting with pooled
+                repeated_weight = einops.repeat(prototype_to_class_weigths, 
+                                                'num_prototypes num_classes -> num_classes batch_size num_prototypes',
+                                                batch_size=pooled.shape[0])
+            else: # Original PIPNet approach
                 # Repeat the classification weights for batch processing
                 repeated_weight = net.module._classification.weight.unsqueeze(1).repeat(1,pooled.shape[0],1)
                 # net.module._classification.weight: [num_classes, num_prototypes] - prototype-to-class weights
                 # repeated_weight: [num_classes, batch_size, num_prototypes] - weights repeated for batch
 
-                # Count non-zero prototype activations weighted by class importance
-                sim_scores_anz = torch.count_nonzero(
-                    torch.gt(torch.abs(pooled*repeated_weight), 1e-3).float(),
-                    dim=2
-                ).float()
-                # pooled*repeated_weight: [num_classes, batch_size, num_prototypes] - weighted prototype activations
-                # torch.gt(...): [num_classes, batch_size, num_prototypes] - boolean mask of significant activations
-                # sim_scores_anz: [num_classes, batch_size] - count of significant prototypes per class per image
+            scores = pooled * repeated_weight
+            # scores: [num_classes, batch_size, num_prototypes] - weighted prototype activations
 
-                # Count prototypes that contribute to each class decision
-                local_size = torch.count_nonzero(
-                    torch.gt(torch.relu((pooled*repeated_weight)-1e-3).mean(dim=1),
-                             0.).float(),
-                    dim=1
-                ).float()
-                # (pooled * repeated_weight).mean(dim=1): 
-                #   - [num_classes, num_prototypes] - Mean of the thresholded prototype-class contributions over all images in the batch
-                # torch.gt(...): 
-                #   - [num_classes, num_prototypes] - Boolean mask indicating whether each prototype’s mean contribution exceeds zero
-                # local_size: [num_classes] - How many prototypes each class has with non-zero mean evidence across the batch
+            # Count non-zero prototype activations weighted by class importance
+            local_size = torch.count_nonzero(
+                torch.gt(torch.abs(scores), 1e-3).float(),
+                dim=2
+            ).float()
+            # scores: [num_classes, batch_size, num_prototypes] - weighted prototype activations
+            # torch.gt(...): [num_classes, batch_size, num_prototypes] - boolean mask of significant activations
+            # local_size: [num_classes, batch_size] - count of significant prototypes per class per image
 
-                # Count of activated prototypes per image (regardless of class)
-                almost_nz = torch.count_nonzero(
-                    torch.gt(torch.abs(pooled), 1e-3).float(),
-                    dim=1
-                ).float()
-                # torch.gt(torch.abs(pooled), 1e-3): [batch_size, num_prototypes] - boolean mask of activated prototypes
-                # almost_nz: [batch_size] - count of activated prototypes per image
+            # (1) Determine which activations exceed the threshold in *absolute* value
+            relevant = torch.abs(scores) > 1e-3
+            # relevant: [num_classes, batch_size, num_prototypes], boolean
+
+            # (2) For each image and prototype, check if *any* class had that prototype relevant.
+            relevant_any_class = relevant.any(dim=0) # shape [batch_size, num_prototypes]
+
+            # (3) Count prototypes per image
+            local_sizes = relevant_any_class.float().sum(dim=1)
+            # local_sizes: [batch_size], how many prototypes were present for image i (relevant for any class)
+
+            # Count prototypes that contribute to each class decision
+            prototypes_per_class = torch.count_nonzero(
+                torch.gt(torch.relu(scores-1e-3).mean(dim=1),
+                            0.).float(),
+                dim=1
+            ).float()
+            # scores.mean(dim=1): 
+            #   - [num_classes, num_prototypes] - Mean of the thresholded prototype-class contributions over all images in the batch
+            # torch.gt(...): 
+            #   - [num_classes, num_prototypes] - Boolean mask indicating whether each prototype’s mean contribution exceeds zero
+            # prototypes_per_class: [num_classes] - How many prototypes each class has with non-zero mean evidence across the batch
+
+            # Count of activated prototypes per image (regardless of class)
+            almost_nz = torch.count_nonzero(
+                torch.gt(torch.abs(pooled), 1e-3).float(),
+                dim=1
+            ).float()
+            # torch.gt(torch.abs(pooled), 1e-3): [batch_size, num_prototypes] - boolean mask of activated prototypes
+            # almost_nz: [batch_size] - count of activated prototypes per image
 
             # Extract information from the correct predicted class
-            correct_class_sim_scores_anz = torch.diagonal(torch.index_select(sim_scores_anz, dim=0, index=ys_pred),0)
-            # torch.index_select(sim_scores_anz, dim=0, index=ys_pred): [batch_size, batch_size] 
-            #   - Selects rows from sim_scores_anz corresponding to each image's predicted class
+            correct_class_local_size = torch.diagonal(torch.index_select(local_size, dim=0, index=ys_pred),0)
+            # torch.index_select(local_size, dim=0, index=ys_pred): [batch_size, batch_size] 
+            #   - Selects rows from local_size corresponding to each image's predicted class
             # torch.diagonal(..., 0): [batch_size]
             #   - For each image, gets the count of significant prototypes for its predicted class
             #   - i.e. prototypes with activation * weight > 1e-3 for the predicted class
             
-            local_size_total += local_size.mean().item() # get an average number of relevant prototypes each class has (batch-averaged)
+            prototypes_per_class_total += prototypes_per_class.mean(0).item() # get an average number of relevant prototypes for each class
 
-            global_sim_anz += correct_class_sim_scores_anz.mean().item()            
+            correct_class_local_size_mean += correct_class_local_size.mean(0).item()
+            all_classes_local_size_mean += local_sizes.mean(0).item()
+                        
             global_anz += almost_nz.mean().item()
             
             # Update the confusion matrix
@@ -172,13 +152,12 @@ def eval_pipnet(net,
                 cm_batch[y_true][y_pred] += 1
             acc = acc_from_cm(cm_batch)
             test_iter.set_postfix_str(
-                f'SimANZCC: {correct_class_sim_scores_anz.mean().item():.2f}, ANZ: {almost_nz.mean().item():.1f}, LocS: {local_size.mean().item():.1f}, Acc: {acc:.3f}', refresh=False
+                f'SimANZCC: {correct_class_local_size.mean().item():.2f}, ANZ: {almost_nz.mean().item():.1f}, LocS: {prototypes_per_class.mean().item():.1f}, Acc: {acc:.3f}', refresh=False
             )    
 
             (top1accs, top5accs) = topk_accuracy(out, ys, topk=[1,5])
             
-            global_top1acc+=torch.sum(top1accs).item()
-            global_top5acc+=torch.sum(top5accs).item()
+            global_top1acc+=torch.mean(top1accs).item()
             y_preds += ys_pred_scores.detach().tolist()
             y_trues += ys.detach().tolist()
             y_preds_classes += ys_pred.detach().tolist()
@@ -192,11 +171,11 @@ def eval_pipnet(net,
     print("sparsity ratio: ", (torch.numel(net.module._classification.weight)-torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()) / torch.numel(net.module._classification.weight), flush=True)
     info['confusion_matrix'] = cm
     info['test_accuracy'] = acc_from_cm(cm)
-    info['top1_accuracy'] = global_top1acc/len(test_loader.dataset)
-    info['top5_accuracy'] = global_top5acc/len(test_loader.dataset)
-    info['almost_sim_nonzeros'] = global_sim_anz/len(test_loader.dataset)
-    info['local_size_all_classes'] = local_size_total / len(test_loader.dataset)
-    info['almost_nonzeros'] = global_anz/len(test_loader.dataset)
+    info['top1_accuracy'] = global_top1acc/len(test_loader)
+    info['local_size_for_true_class'] = correct_class_local_size_mean/len(test_loader)
+    info['local_size_for_all_classes'] = all_classes_local_size_mean/len(test_loader)
+    info['prototypes_per_class'] = prototypes_per_class_total / len(test_loader)
+    info['almost_nonzeros'] = global_anz/len(test_loader)
 
     if net.module._num_classes == 2:
         tp = cm[0][0]
@@ -218,14 +197,11 @@ def eval_pipnet(net,
             pass
         print("Balanced accuracy: ", balanced_accuracy_score(y_trues, y_preds_classes),flush=True)
         print("Sensitivity: ", sensitivity, "Specificity: ", specificity,flush=True)
-        info['top5_accuracy'] = f1_score(y_trues, y_preds_classes)
         try:
             print("AUC macro: ", roc_auc_score(y_trues, y_preds, average='macro'), flush=True)
             print("AUC weighted: ", roc_auc_score(y_trues, y_preds, average='weighted'), flush=True)
         except ValueError:
             pass
-    else:
-        info['top5_accuracy'] = global_top5acc/len(test_loader.dataset) 
 
     return info
 
@@ -246,3 +222,60 @@ def acc_from_cm(cm: np.ndarray) -> float:
         return 1
     else:
         return correct / total
+
+def compute_local_explanation_sizes(
+    scores: torch.Tensor,
+    ys_pred: torch.Tensor,
+    threshold: float = 1e-3
+):
+    """
+    Compute two metrics for local explanation size:
+      1) # of prototypes active for *any* class in each image
+      2) # of prototypes active for that image's *predicted* class
+
+    Args:
+        scores: [num_classes, batch_size, num_prototypes] tensor of weighted prototype activations (pooled * repeated_weight)
+        ys_pred: [batch_size] long tensor with predicted class indices in [0..num_classes-1].
+        threshold: Activation threshold for deciding if a prototype is "present."
+        
+    Returns:
+        any_class_sizes:  [batch_size]  (# of prototypes that passed threshold for any class)
+        pred_class_sizes: [batch_size]  (# of prototypes that passed threshold for predicted class)
+    """
+    
+
+    # Threshold scores to find which prototypes are "active"
+    #    --> relevant: [num_classes, batch_size, num_prototypes], boolean
+    relevant = torch.abs(scores) > threshold
+
+    # -------------------------------------------------------------------------
+    # (A) ANY-CLASS EXPLANATION SIZE
+    #   For each image, a prototype is counted if it is active in *any* class.
+    #   So we do an "any" reduction over num_classes, then a "sum" over prototypes.
+    # -------------------------------------------------------------------------
+    #    relevant_any_class: [batch_size, num_prototypes]
+    relevant_any_class = relevant.any(dim=0)
+    #    any_class_sizes: [batch_size]
+    any_class_sizes = relevant_any_class.sum(dim=1)
+
+    # -------------------------------------------------------------------------
+    # (B) PREDICTED-CLASS EXPLANATION SIZE
+    #   For each image i, we only look at the row = ys_pred[i] in relevant,
+    #   then count active prototypes.
+    # -------------------------------------------------------------------------
+    #   Approach:
+    #   1) Sum across prototypes -> shape [num_classes, batch_size]
+    #   2) index_select the correct class for each image -> shape [batch_size, batch_size]
+    #   3) take the diagonal -> shape [batch_size]
+    #
+    #   That yields "per-image, how many prototypes are active for the predicted class?"
+    # -------------------------------------------------------------------------
+
+    #   local_count_per_class: [num_classes, batch_size]
+    local_count_per_class = relevant.sum(dim=2).float()
+    #   pick the row for each predicted class
+    #   => shape [batch_size, batch_size], then diagonal => [batch_size]
+    selected_local_count = torch.index_select(local_count_per_class, dim=0, index=ys_pred)
+    pred_class_sizes = torch.diagonal(selected_local_count, offset=0)
+
+    return any_class_sizes, pred_class_sizes
