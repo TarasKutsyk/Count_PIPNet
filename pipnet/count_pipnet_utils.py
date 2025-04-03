@@ -365,7 +365,7 @@ class LinearFull(nn.Module):
         """
         return self.linear(x)
 
-    def prototype_to_weight_relevance(self, prototype_idx):
+    def prototype_to_classifier_input_weights(self, prototype_idx):
         # Return the full weight vector corresponding to the given prototype index.
         # self.linear.weight has shape [expanded_dim, num_prototypes]
         return self.linear.weight[:, prototype_idx]
@@ -373,11 +373,12 @@ class LinearFull(nn.Module):
 class IdentityIntermediate(nn.Module):
     def __init__(self, num_prototypes):
         """
-        A wrapper around nn.Identity that implements the same interface as
-        other intermediate layers, including the prototype_to_weight_relevance method.
+        A wrapper around nn.Identity that implements the uniform interface for intermediate layers.
+        For the identity mapping, each prototype maps to a unique output position, so the relevance vector
+        is one-hot encoded.
         
         Args:
-            num_prototypes: The number of prototypes (i.e. the dimension of the identity mapping)
+            num_prototypes: The number of prototypes (i.e., the dimension of the identity mapping)
         """
         super().__init__()
         self.identity = nn.Identity()
@@ -386,14 +387,13 @@ class IdentityIntermediate(nn.Module):
     def forward(self, x):
         return self.identity(x)
 
-    def prototype_to_weight_relevance(self, prototype_idx):
+    def prototype_to_classifier_input_weights(self, prototype_idx):
         """
-        Returns a vector of all ones with length equal to the number of prototypes.
-        This indicates that the identity mapping preserves all input values uniformly.
-        The prototype_idx argument is ignored since the mapping is identical for all prototypes.
+        Returns a one-hot encoded vector of length num_prototypes, where the position corresponding to 
+        prototype_idx is 1 and all others are 0.
         """
-        return torch.ones(self.num_prototypes)
-
+        return torch.eye(self.num_prototypes)[prototype_idx]
+    
 class LinearIntermediate(nn.Module):
     """
     A simple linear intermediate layer that maps count values to a higher-dimensional space.
@@ -444,7 +444,7 @@ class LinearIntermediate(nn.Module):
         
         return result
 
-    def prototype_to_weight_relevance(self, prototype_idx):
+    def prototype_to_classifier_input_weights(self, prototype_idx):
         # Total length of the flattened output vector
         total_length = self.num_prototypes * self.expansion_factor
 

@@ -241,6 +241,8 @@ def run_pipnet(args=None):
             param.requires_grad = True
         for param in net.module._classification.parameters():
             param.requires_grad = False
+        for param in net.module._intermediate.parameters():
+            param.requires_grad = False
         
         for param in params_to_freeze:
             param.requires_grad = True # can be set to False when you want to freeze more layers
@@ -310,7 +312,7 @@ def run_pipnet(args=None):
         param.requires_grad = False
     for param in net.module._classification.parameters():
         param.requires_grad = True
-    
+
     frozen = True
     lrs_net = []
     lrs_classifier = []
@@ -326,10 +328,12 @@ def run_pipnet(args=None):
         
         if epoch <= epochs_to_finetune:
             print(f'Finetuning...')
-            # Freeze everything except classification layer
+            # Freeze everything except classification and intermediate layer
             for param in net.module.parameters():
                 param.requires_grad = False
             for param in net.module._classification.parameters():
+                param.requires_grad = True
+            for param in net.module._intermediate.parameters():
                 param.requires_grad = True
             finetune = True
         else:
@@ -350,12 +354,15 @@ def run_pipnet(args=None):
                     if epoch > args.freeze_epochs:
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
+                        for param in net.module._intermediate.parameters():
+                            param.requires_grad = True
                         for param in params_to_freeze:
                             param.requires_grad = True
                         for param in params_to_train:
                             param.requires_grad = True
                         for param in params_backbone:
                             param.requires_grad = True
+
                         frozen = False
                         print(f'Training everything...')
                     # Keep first layers of backbone frozen, train rest
@@ -364,6 +371,8 @@ def run_pipnet(args=None):
                             param.requires_grad = True
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
+                        for param in net.module._intermediate.parameters():
+                            param.requires_grad = True                            
                         for param in params_to_train:
                             param.requires_grad = True
                         for param in params_backbone:
@@ -388,14 +397,6 @@ def run_pipnet(args=None):
                                   is_count_pipnet=is_count_pipnet, pretrain=False, finetune=finetune,
                                   enforce_weight_sparsity=args.enforce_weight_sparsity)
 
-        # For CountPiPNet anneal the Gumbel-Softmax temperature
-        # if hasattr(args, 'model') and args.model == 'count_pipnet' and not frozen:
-        #     # During full training: continue decreasing to get more discrete assignments
-        #     temp = max(0.1, 0.3 - 0.2 * (epoch / args.epochs))
-            
-        #     net.module.update_temperature(temp)
-        #     print(f"Updated Gumbel-Softmax temperature to {temp:.3f}", flush=True)
-
         lrs_net+=train_info['lrs_net']
         lrs_classifier+=train_info['lrs_class']
         # Evaluate model
@@ -410,7 +411,7 @@ def run_pipnet(args=None):
             
         with torch.no_grad():
             # Save the checkpoint
-            # checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch)
+            checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch)
 
             # Save the best checkpoint if this is the best model so far
             checkpoint_manager.save_best_checkpoint(net, optimizer_net, optimizer_classifier, 

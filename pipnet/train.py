@@ -167,13 +167,9 @@ def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, 
     a_loss_pf = (align_loss(embv1, embv2.detach())+ align_loss(embv2, embv1.detach()))/2.
     
     C = 0.01
-    if not is_count_pipnet:
-        tanh_loss = -(torch.log(torch.tanh(C * torch.sum(pooled1,dim=0))+EPS).mean() + 
-                      torch.log(torch.tanh(C * torch.sum(pooled2,dim=0))+EPS).mean())/2.
-    else:
-        tanh_loss = -(torch.log(torch.tanh(C * torch.sum(pooled1,dim=0))+EPS).mean() + 
-                      torch.log(torch.tanh(C * torch.sum(pooled2,dim=0))+EPS).mean())/2.
-                
+    tanh_loss = -(torch.log(torch.tanh(C * torch.sum(pooled1,dim=0))+EPS).mean() + 
+                  torch.log(torch.tanh(C * torch.sum(pooled2,dim=0))+EPS).mean())/2.
+
     loss_components = {
             'align': a_loss_pf.item(),
             'align_weighted': a_loss_pf.item() * align_pf_weight,

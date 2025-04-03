@@ -284,7 +284,8 @@ def run_all_configs(cmd_args):
             "config_path": config_path,
             "status": run_status,
             "duration": run_duration,
-            "log_dir": run_args.log_dir if 'run_args' in locals() else None
+            "log_dir": run_args.log_dir if 'run_args' in locals() else None,
+            "pretrained_checkpoint": run_args.shared_pretrained_dir
         })
         
         # Print summary after each run

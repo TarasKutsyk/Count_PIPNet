@@ -1,5 +1,6 @@
 import argparse
 import math
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -111,6 +112,32 @@ class CountPIPNet(nn.Module):
         # Sum over spatial dimensions to count prototype occurrences
         counts = proto_features.sum(dim=(2, 3))
         return counts
+    
+    def get_prototype_importance_per_class(self, prototype_idx):
+        intermediate_layer = self._intermediate
+
+        # Get the mapping from the given prototype to its "influence" on the classifiers' input X
+        # this will return the weights of the same shape as X: typically [num_prototypes * max_count]
+        classifier_input_weights = intermediate_layer.prototype_to_classifier_input_weights(prototype_idx) 
+        # Get the absolute weights to avoid cancellation effects
+        classifier_input_weights = torch.abs(classifier_input_weights)
+
+        # if prototype_idx == 0:
+        #     print(f'classifier_input_weights shape: {classifier_input_weights.shape}')
+        #     print(f'classifier_input_weights:\n{classifier_input_weights}')
+
+        # Now compute the per-class importance for a given prototype by taking a dot product
+        # between the classifier_input_weights and the classifier weights themselves for each class
+        prototype_importance_per_class = einops.einsum(classifier_input_weights, self._classification.weight,
+                                                       "input_dim, n_classes input_dim -> n_classes")
+        return prototype_importance_per_class
+    
+
+    def get_prototype_importance(self, prototype_idx):
+        prototype_importance_per_class = self.get_prototype_importances_per_class(prototype_idx)
+        
+        # The total importance is the sum of all per-class importances
+        return prototype_importance_per_class.sum().item()
     
     def update_temperature(self, new_temperature):
         """

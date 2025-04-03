@@ -65,8 +65,8 @@ def eval_pipnet(net,
             if is_count_pipnet and args.intermediate_layer != 'identity':
                 # Get the maximum count parameter from the model
                 max_count = net.module._max_count
-                # Calculate the number of actual prototypes (before one-hot encoding expanded them)
-                num_raw_prototypes = pooled.shape[1] // max_count
+                # Calculate the number of actual prototypes
+                num_raw_prototypes = net.module._num_prototypes
                 
                 # Reshape pooled to recover the original structure before flattening
                 reshaped_pooled = einops.rearrange(
@@ -124,20 +124,31 @@ def eval_pipnet(net,
                 # repeated_weight: [num_classes, batch_size, num_prototypes] - weights repeated for batch
 
                 # Count non-zero prototype activations weighted by class importance
-                sim_scores_anz = torch.count_nonzero(torch.gt(torch.abs(pooled*repeated_weight), 1e-3).float(),dim=2).float()
+                sim_scores_anz = torch.count_nonzero(
+                    torch.gt(torch.abs(pooled*repeated_weight), 1e-3).float(),
+                    dim=2
+                ).float()
                 # pooled*repeated_weight: [num_classes, batch_size, num_prototypes] - weighted prototype activations
                 # torch.gt(...): [num_classes, batch_size, num_prototypes] - boolean mask of significant activations
                 # sim_scores_anz: [num_classes, batch_size] - count of significant prototypes per class per image
 
                 # Count prototypes that contribute to each class decision
-                local_size = torch.count_nonzero(torch.gt(torch.relu((pooled*repeated_weight)-1e-3).sum(dim=1), 0.).float(),dim=1).float()
-                # (pooled*repeated_weight).sum(dim=1): [num_classes, batch_size] - summed weighted activations per class
-                # torch.gt(...): [num_classes, batch_size] - boolean mask of classes with significant evidence
-                # local_size: [num_classes] - count of images where each class has significant evidence
+                local_size = torch.count_nonzero(
+                    torch.gt(torch.relu((pooled*repeated_weight)-1e-3).mean(dim=1),
+                             0.).float(),
+                    dim=1
+                ).float()
+                # (pooled * repeated_weight).mean(dim=1): 
+                #   - [num_classes, num_prototypes] - Mean of the thresholded prototype-class contributions over all images in the batch
+                # torch.gt(...): 
+                #   - [num_classes, num_prototypes] - Boolean mask indicating whether each prototype’s mean contribution exceeds zero
+                # local_size: [num_classes] - How many prototypes each class has with non-zero mean evidence across the batch
 
                 # Count of activated prototypes per image (regardless of class)
-                almost_nz = torch.count_nonzero(torch.gt(torch.abs(pooled), 1e-3).float(),dim=1).float()
-                # torch.count_nonzero(torch.relu(pooled-0.1),dim=1).float().mean().item()
+                almost_nz = torch.count_nonzero(
+                    torch.gt(torch.abs(pooled), 1e-3).float(),
+                    dim=1
+                ).float()
                 # torch.gt(torch.abs(pooled), 1e-3): [batch_size, num_prototypes] - boolean mask of activated prototypes
                 # almost_nz: [batch_size] - count of activated prototypes per image
 
@@ -147,11 +158,12 @@ def eval_pipnet(net,
             #   - Selects rows from sim_scores_anz corresponding to each image's predicted class
             # torch.diagonal(..., 0): [batch_size]
             #   - For each image, gets the count of significant prototypes for its predicted class
+            #   - i.e. prototypes with activation * weight > 1e-3 for the predicted class
             
-            local_size_total += local_size.sum().item()
+            local_size_total += local_size.mean().item() # get an average number of relevant prototypes each class has (batch-averaged)
 
-            global_sim_anz += correct_class_sim_scores_anz.sum().item()            
-            global_anz += almost_nz.sum().item()
+            global_sim_anz += correct_class_sim_scores_anz.mean().item()            
+            global_anz += almost_nz.mean().item()
             
             # Update the confusion matrix
             cm_batch = np.zeros((net.module._num_classes, net.module._num_classes), dtype=int)

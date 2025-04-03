@@ -129,14 +129,14 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
                 
                 # Show which specific prototypes are being used
                 used_protos = torch.where(prototype_importance > 1e-3)[0].tolist()
-                print("Prototype indices with weight > 1e-3:", used_protos)
+                print("Prototype indices with weight > 1e-1:", used_protos)
             else:
                 print("Visualizing all prototypes (ignoring classification weights during pretraining)")
 
     # Initialize storage for top-k prototypes
     prototype_storage = {}
     for p in range(num_prototypes):
-        if are_pretraining_prototypes or prototype_importance[p] > 1e-3:
+        if are_pretraining_prototypes or prototype_importance[p] > 1e-1:
             prototype_storage[p] = []
     
     # Create feature maps directory if needed
@@ -433,9 +433,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
     """
     # Required imports for visualization
     from PIL import Image, ImageDraw as D
-    import math
-    import heapq
-    
+
     # Class to count mapping configuration
     # Maps class ranges to their corresponding count values
     # This can be edited based on dataset organization
@@ -449,7 +447,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
     # Function to determine count from class label
     def get_count_from_class(class_label):
         for (start, end), count in class_to_count_mapping.items():
-            if start <= class_label + 1 <= end:
+            if start <= class_label + 1 <= end: # class labels are numbered from zero, so add one
                 return count
 
         raise ValueError(f"No class label found for label {class_label + 1}")
@@ -476,32 +474,9 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
     classification_weights = net.module._classification.weight
     
     # Determine prototype importance for CountPIPNet
-    if classification_weights.shape[1] > num_prototypes:
-        weights_reshaped = classification_weights.reshape(num_classes, num_prototypes, max_count)
-        # Sum across non-zero counts for each prototype
-        prototype_importance = weights_reshaped.sum(dim=2).max(dim=0)[0]
-    else:
-        # Fall back to standard method if weights aren't expanded
-        prototype_importance = torch.max(classification_weights, dim=0)[0]
-
-    # When visualizing pretraining prototypes, include all prototypes
-    if are_pretraining_prototypes:
-        prototype_importance = torch.ones_like(prototype_importance)
-
-    # Plot activation histograms if requested
-    if plot_histograms:
-        histogram_dir = os.path.join(dir, "activation_histograms")
-        os.makedirs(histogram_dir, exist_ok=True)
-        
-        plot_prototype_activations_histograms(
-            net=net,
-            dataloader=projectloader,
-            device=device,
-            output_dir=histogram_dir,
-            only_important_prototypes=not are_pretraining_prototypes,
-            importance_threshold=1e-3,
-            is_count_pipnet=True,
-        )
+    prototype_importance = torch.tensor(
+        [net.module.get_prototype_importance(i) for i in range(num_prototypes)]
+    )
 
     if verbose:
         # Debug information
@@ -535,13 +510,29 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
             
             if not are_pretraining_prototypes:
                 print("Max classification weight per prototype:", [round(v, 4) for v in prototype_importance.tolist()])
-                print("Prototypes with weight > 1e-3:", (prototype_importance > 1e-3).sum().item())
+                print("Prototypes with weight > 1e-1:", (prototype_importance > 1e-1).sum().item())
                 
                 # Show which specific prototypes are being used
-                used_protos = torch.where(prototype_importance > 1e-3)[0].tolist()
-                print("Prototype indices with weight > 1e-3:", used_protos)
+                used_protos = torch.where(prototype_importance > 1e-1)[0].tolist()
+                print("Prototype indices with weight > 1e-1:", used_protos)
             else:
                 print("Visualizing all prototypes (ignoring classification weights during pretraining)")
+
+    # Plot activation histograms if requested
+    if plot_histograms:
+        histogram_dir = os.path.join(dir, "activation_histograms")
+        os.makedirs(histogram_dir, exist_ok=True)
+        
+        plot_prototype_activations_histograms(
+            net=net,
+            dataloader=projectloader,
+            device=device,
+            output_dir=histogram_dir,
+            only_important_prototypes=not are_pretraining_prototypes,
+            prototype_importance=prototype_importance,
+            importance_threshold=1e-1,
+            is_count_pipnet=True,
+        )
 
     # Create feature maps directory if needed
     if visualize_prototype_maps:
@@ -552,7 +543,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
     # We'll maintain k examples with highest activation for each prototype and count
     topk_storage = {}
     for p in range(num_prototypes):
-        if are_pretraining_prototypes or prototype_importance[p] > 1e-3:
+        if are_pretraining_prototypes or prototype_importance[p] > 0.1:
             topk_storage[p] = {}
             for count in available_counts:
                 # Initialize with empty lists that can hold up to k items
@@ -920,7 +911,8 @@ Feature map mean: {feature_map_mean:.3f}
 
 def plot_prototype_activations_histograms(net, dataloader, device, output_dir, 
                                          only_important_prototypes=True, 
-                                         importance_threshold=1e-3,
+                                         prototype_importance=None,
+                                         importance_threshold=1e-1,
                                          is_count_pipnet=None, 
                                          num_bins=100,  # Increased for granularity
                                          max_images=1000):
@@ -933,6 +925,7 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
         device: Device to run the model on
         output_dir: Directory to save the plots
         only_important_prototypes: If True, only plot prototypes relevant to classification
+        prototype_importance: 1-D tensor of shape [num_prototypes] containing prototypes importance scores
         importance_threshold: Threshold for considering a prototype important
         is_count_pipnet: Whether the model is CountPIPNet (auto-detected if None)
         num_bins: Number of bins for the histograms
@@ -957,29 +950,11 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
     
     # Determine important prototypes based on classification weights
     num_prototypes = net.module._num_prototypes
-    num_classes = net.module._classification.weight.shape[0]
-    classification_weights = net.module._classification.weight
-    
-    if is_count_pipnet and classification_weights.shape[1] > num_prototypes:
-        # Handle CountPIPNet with expanded weights
-        num_bins_count = max_count
-        
-        # Reshape weights from [classes, (protos*counts)] to [classes, protos, counts]
-        weights_reshaped = einops.rearrange(
-            classification_weights, 
-            'classes (protos counts) -> classes protos counts',
-            protos=num_prototypes, counts=num_bins_count
-        )
-        
-        # Sum weights for non-zero counts (1 and above) and take max across classes
-        sum_across_counts = torch.sum(weights_reshaped, dim=2)  # Sum across counts
-        prototype_importance = torch.max(sum_across_counts, dim=0)[0]  # Max across classes
-    else:
-        # Standard weight handling for PIPNet or simple CountPIPNet
-        prototype_importance = torch.max(classification_weights, dim=0)[0]
     
     # Decide which prototypes to plot
     if only_important_prototypes:
+        assert prototype_importance is not None, "prototype_importance tensor must be provided when only_important_prototypes = True"
+
         prototypes_to_plot = torch.where(prototype_importance > importance_threshold)[0].tolist()
         if not prototypes_to_plot:
             print("No prototypes with importance > threshold. Plotting all prototypes.")
