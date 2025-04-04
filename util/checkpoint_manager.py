@@ -172,8 +172,8 @@ class CheckpointManager:
         if epoch is not None:
             if epoch == "last":
                 specific_path = os.path.join(checkpoint_dir, 'net_trained_last')
-            elif isinstance(epoch, int) and epoch % 30 == 0:
-                specific_path = os.path.join(checkpoint_dir, f'net_trained_{epoch}')
+            # elif isinstance(epoch, int) and epoch % 30 == 0:
+            #     specific_path = os.path.join(checkpoint_dir, f'net_trained_{epoch}')
             else:
                 # Don't save for other epochs
                 net.train()

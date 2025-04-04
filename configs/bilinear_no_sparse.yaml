@@ -11,8 +11,8 @@ use_mid_layers: True              # Use only middle layers of the backbone netwo
 num_stages: 3                    # Number of stages to use when using middle layers
 num_features: 16                   # Number of prototypes (0 = use backbone's output channel count)
 activation: 'gumbel_softmax'  # Options: 'gumbel_softmax', 'softmax'
-intermediate_layer: linear # Options: 'linear', 'onehot', 'bilinear', 'identity', 'linear_full'
-enforce_weight_sparsity: True
+intermediate_layer: bilinear # Options: 'linear', 'onehot', 'bilinear', 'identity', 'linear_full'
+enforce_weight_sparsity: False
 
 # Logging and output
 log_dir: '' # Directory for saving logs and checkpoints

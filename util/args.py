@@ -293,6 +293,11 @@ def get_optimizer_nn(net, args: argparse.Namespace):
         {"params": classification_weight, "lr": args.lr, "weight_decay": args.weight_decay},
         {"params": classification_bias, "lr": args.lr, "weight_decay": 0.0},
     ]
+
+    if hasattr(net.module, '_intermediate'):
+        paramlist_classifier.append(
+            {"params": net.module._intermediate.parameters(), "lr": args.lr, "weight_decay": args.weight_decay}
+        )
           
     # Create optimizers
     if args.optimizer == 'Adam':

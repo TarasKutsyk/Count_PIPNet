@@ -212,7 +212,7 @@ class NonNegLinear(nn.Module):
 
 # Cleaner channel detection for get_count_network function
 def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int = 3, 
-                      use_ste: bool = False):
+                      use_ste: bool = False, device=None):
     """
     Create a CountPIPNet model with the specified parameters.
     
@@ -293,7 +293,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'identity':
         # Identity intermediate layer
-        intermediate_layer = IdentityIntermediate(num_prototypes)
+        intermediate_layer = IdentityIntermediate(num_prototypes, device=device)
         expanded_dim = num_prototypes
     else:
         raise ValueError(f"Unknown intermediate layer type: {intermediate_type}")

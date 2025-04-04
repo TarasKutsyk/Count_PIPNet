@@ -371,7 +371,7 @@ class LinearFull(nn.Module):
         return self.linear.weight[:, prototype_idx]
 
 class IdentityIntermediate(nn.Module):
-    def __init__(self, num_prototypes):
+    def __init__(self, num_prototypes, device):
         """
         A wrapper around nn.Identity that implements the uniform interface for intermediate layers.
         For the identity mapping, each prototype maps to a unique output position, so the relevance vector
@@ -383,6 +383,7 @@ class IdentityIntermediate(nn.Module):
         super().__init__()
         self.identity = nn.Identity()
         self.num_prototypes = num_prototypes
+        self.device = device
 
     def forward(self, x):
         return self.identity(x)
@@ -392,7 +393,7 @@ class IdentityIntermediate(nn.Module):
         Returns a one-hot encoded vector of length num_prototypes, where the position corresponding to 
         prototype_idx is 1 and all others are 0.
         """
-        return torch.eye(self.num_prototypes)[prototype_idx]
+        return torch.eye(self.num_prototypes, device=self.device)[prototype_idx]
     
 class LinearIntermediate(nn.Module):
     """

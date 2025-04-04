@@ -88,6 +88,14 @@ def get_data(args: argparse.Namespace, basepath: Path = Path('./')):
             basepath / 'data/geometric_shapes_no_noise/dataset/test', 
             args.image_size, args.seed, args.validation_size
         )
+    if args.dataset == 'geometric_shapes_224_gaussian_noise':
+        return get_geometric_shapes_with_gaussian_noise(
+            True, 
+            basepath / 'data/geometric_shapes_224_no_noise/dataset/train', 
+            basepath / 'data/geometric_shapes_224_no_noise/dataset/train', 
+            basepath / 'data/geometric_shapes_224_no_noise/dataset/test', 
+            args.image_size, args.seed, args.validation_size
+        )
     if args.dataset == 'mnist_counting':
         return get_mnist_counting(
             True, 

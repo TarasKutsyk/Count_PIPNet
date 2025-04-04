@@ -107,6 +107,7 @@ def run_pipnet(args=None):
         net, num_prototypes = get_count_network(
             num_classes=len(classes), 
             args=args,
+            device=device,
             max_count=getattr(args, 'max_count', 3),
             use_ste=getattr(args, 'use_ste', False))
     else:
@@ -241,8 +242,8 @@ def run_pipnet(args=None):
             param.requires_grad = True
         for param in net.module._classification.parameters():
             param.requires_grad = False
-        # for param in net.module._intermediate.parameters():
-        #     param.requires_grad = False
+        for param in net.module._intermediate.parameters():
+            param.requires_grad = False
         
         for param in params_to_freeze:
             param.requires_grad = True # can be set to False when you want to freeze more layers
@@ -333,8 +334,8 @@ def run_pipnet(args=None):
                 param.requires_grad = False
             for param in net.module._classification.parameters():
                 param.requires_grad = True
-            # for param in net.module._intermediate.parameters():
-            #     param.requires_grad = True
+            for param in net.module._intermediate.parameters():
+                param.requires_grad = True
             finetune = True
         else:
             finetune = False
@@ -354,8 +355,8 @@ def run_pipnet(args=None):
                     if epoch > args.freeze_epochs:
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
-                        # for param in net.module._intermediate.parameters():
-                        #     param.requires_grad = True
+                        for param in net.module._intermediate.parameters():
+                            param.requires_grad = True
                         for param in params_to_freeze:
                             param.requires_grad = True
                         for param in params_to_train:
@@ -371,8 +372,8 @@ def run_pipnet(args=None):
                             param.requires_grad = True
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
-                        # for param in net.module._intermediate.parameters():
-                        #     param.requires_grad = True                            
+                        for param in net.module._intermediate.parameters():
+                            param.requires_grad = True                            
                         for param in params_to_train:
                             param.requires_grad = True
                         for param in params_backbone:

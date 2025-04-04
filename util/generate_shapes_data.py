@@ -22,9 +22,9 @@ import matplotlib.pyplot as plt
 CONFIG = {
     # Dataset parameters
     # Directory to save the generated images
-    'output_dir': './data/geometric_shapes_no_noise/dataset',
+    'output_dir': './data/geometric_shapes_224_no_noise/dataset',
 
-    'img_size': 192,                          # Size of output images (square)
+    'img_size': 224,                          # Size of output images (square)
     'train_samples_per_class': 400,           # Number of training samples per class
     'test_samples_per_class': 100,             # Number of test samples per class
     'seed': 42,                               # Random seed for reproducibility

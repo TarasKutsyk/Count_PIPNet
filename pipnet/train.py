@@ -71,6 +71,11 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier,
     
     lrs_net = []
     lrs_class = []
+
+    # for name, param in net.named_parameters():
+    #     if '_intermediate' in name:
+    #         print(f"{name} value BEFORE update: {param.data}")
+
     # Iterate through the data set to update leaves, prototypes and network
     for i, (xs1, xs2, ys) in train_iter:       
         
@@ -101,13 +106,13 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier,
         # Compute the gradient
         loss.backward()
         
-        if epoch == 1 and i==0:
-            print("Gradient norms:")
-            for name, param in net.named_parameters():
-                if param.requires_grad and param.grad is not None:
-                    grad_norm = param.grad.norm().item()
-                    if grad_norm > 0:
-                        print(f"{name}: {grad_norm}")
+        # if epoch == 1 and i==0:
+        # print("Gradient norms:")
+        # for name, param in net.named_parameters():
+        #     if param.requires_grad and param.grad is not None:
+        #         grad_norm = param.grad.norm().item()
+        #         if grad_norm > 0 and '_intermediate' in name:
+        #             print(f"{name}: {grad_norm}")
 
         if not pretrain:
             optimizer_classifier.step()   
@@ -132,6 +137,10 @@ def train_pipnet(net, train_loader, optimizer_net, optimizer_classifier,
                 net.module._classification.normalization_multiplier.copy_(torch.clamp(net.module._classification.normalization_multiplier.data, min=1.0)) 
                 if net.module._classification.bias is not None:
                     net.module._classification.bias.copy_(torch.clamp(net.module._classification.bias.data, min=0.))  
+
+    # for name, param in net.named_parameters():
+    #     if '_intermediate' in name:
+    #         print(f"{name} value AFTER update: {param.data}")
 
     # Store average loss components in train_info
     train_info['align_loss_raw'] = align_loss_raw_total/float(i+1)

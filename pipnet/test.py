@@ -90,25 +90,9 @@ def eval_pipnet(net,
             scores = pooled * repeated_weight
             # scores: [num_classes, batch_size, num_prototypes] - weighted prototype activations
 
-            # Count non-zero prototype activations weighted by class importance
-            local_size = torch.count_nonzero(
-                torch.gt(torch.abs(scores), 1e-3).float(),
-                dim=2
-            ).float()
-            # scores: [num_classes, batch_size, num_prototypes] - weighted prototype activations
-            # torch.gt(...): [num_classes, batch_size, num_prototypes] - boolean mask of significant activations
-            # local_size: [num_classes, batch_size] - count of significant prototypes per class per image
-
-            # (1) Determine which activations exceed the threshold in *absolute* value
-            relevant = torch.abs(scores) > 1e-3
-            # relevant: [num_classes, batch_size, num_prototypes], boolean
-
-            # (2) For each image and prototype, check if *any* class had that prototype relevant.
-            relevant_any_class = relevant.any(dim=0) # shape [batch_size, num_prototypes]
-
-            # (3) Count prototypes per image
-            local_sizes = relevant_any_class.float().sum(dim=1)
-            # local_sizes: [batch_size], how many prototypes were present for image i (relevant for any class)
+            any_class_local_sizes, pred_class_local_sizes = compute_local_explanation_sizes(
+                scores, ys_pred, threshold=1e-3
+            )
 
             # Count prototypes that contribute to each class decision
             prototypes_per_class = torch.count_nonzero(
@@ -129,20 +113,11 @@ def eval_pipnet(net,
             ).float()
             # torch.gt(torch.abs(pooled), 1e-3): [batch_size, num_prototypes] - boolean mask of activated prototypes
             # almost_nz: [batch_size] - count of activated prototypes per image
-
-            # Extract information from the correct predicted class
-            correct_class_local_size = torch.diagonal(torch.index_select(local_size, dim=0, index=ys_pred),0)
-            # torch.index_select(local_size, dim=0, index=ys_pred): [batch_size, batch_size] 
-            #   - Selects rows from local_size corresponding to each image's predicted class
-            # torch.diagonal(..., 0): [batch_size]
-            #   - For each image, gets the count of significant prototypes for its predicted class
-            #   - i.e. prototypes with activation * weight > 1e-3 for the predicted class
             
-            prototypes_per_class_total += prototypes_per_class.mean(0).item() # get an average number of relevant prototypes for each class
-
-            correct_class_local_size_mean += correct_class_local_size.mean(0).item()
-            all_classes_local_size_mean += local_sizes.mean(0).item()
+            correct_class_local_size_mean += pred_class_local_sizes.mean(0).item()
+            all_classes_local_size_mean += any_class_local_sizes.mean(0).item()
                         
+            prototypes_per_class_total += prototypes_per_class.mean(0).item() # get an average number of relevant prototypes for each class
             global_anz += almost_nz.mean().item()
             
             # Update the confusion matrix
@@ -152,7 +127,7 @@ def eval_pipnet(net,
                 cm_batch[y_true][y_pred] += 1
             acc = acc_from_cm(cm_batch)
             test_iter.set_postfix_str(
-                f'SimANZCC: {correct_class_local_size.mean().item():.2f}, ANZ: {almost_nz.mean().item():.1f}, LocS: {prototypes_per_class.mean().item():.1f}, Acc: {acc:.3f}', refresh=False
+                f'local_pred_class: {pred_class_local_sizes.mean().item():.2f}, ANZ: {almost_nz.mean().item():.1f}, Acc: {acc:.3f}', refresh=False
             )    
 
             (top1accs, top5accs) = topk_accuracy(out, ys, topk=[1,5])
@@ -278,4 +253,4 @@ def compute_local_explanation_sizes(
     selected_local_count = torch.index_select(local_count_per_class, dim=0, index=ys_pred)
     pred_class_sizes = torch.diagonal(selected_local_count, offset=0)
 
-    return any_class_sizes, pred_class_sizes
+    return any_class_sizes.float(), pred_class_sizes.float()

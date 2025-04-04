@@ -1,6 +1,6 @@
 # CountPIPNet MNIST Configuration
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
-dataset: geometric_shapes_gaussian_noise           # Dataset name as defined in data.py
+dataset: geometric_shapes_224_gaussian_noise           # Dataset name as defined in data.py
 
 pretrained_checkpoints_dir: ''
 resume_training: False
