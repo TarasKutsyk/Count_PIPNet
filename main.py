@@ -295,10 +295,10 @@ def run_pipnet(args=None):
         net.eval()
         checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
 
-        with torch.no_grad():
-            topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                                   k=10, are_pretraining_prototypes=True)
-            
+    with torch.no_grad():
+        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
+                                k=10, are_pretraining_prototypes=True, plot_histograms=False, visualize_prototype_maps=False)
+        
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
     if not resume_training or not resume_info['success']:
@@ -430,7 +430,8 @@ def run_pipnet(args=None):
     if args.epochs > 1:
         checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
         
-    topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args)
+    topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args,
+                           plot_histograms=False, visualize_prototype_maps=False)
     # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
 
     # Now load and visualize the best model's prototypes
@@ -440,7 +441,8 @@ def run_pipnet(args=None):
         print(f"Loaded best model from epoch {best_model_info['epoch']} with accuracy {best_model_info['accuracy']:.4f} for visualization", flush=True)
         # Create a dedicated folder for the best model prototypes
         best_model_folder = f'visualised_prototypes_topk_best_model_epoch{best_model_info["epoch"]}'
-        topks_best = visualize_topk(net, projectloader, len(classes), device, best_model_folder, args)
+        topks_best = visualize_topk(net, projectloader, len(classes), device, best_model_folder, args,
+                                    plot_histograms=False, visualize_prototype_maps=False)
         print(f"Best model prototypes visualized in folder: {best_model_folder}", flush=True)
     else:
         print("Failed to load best model for prototype visualization", flush=True)
