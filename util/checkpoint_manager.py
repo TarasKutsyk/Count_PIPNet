@@ -95,13 +95,14 @@ class CheckpointManager:
         print("No valid matching checkpoint found", flush=True)
         return False
     
-    def save_pretrained_checkpoint(self, net, optimizer_net):
+    def save_pretrained_checkpoint(self, net, optimizer_net, use_hash_based_naming=False):
         """
-        Save a pretrained checkpoint with the current configuration hash.
+        Save a pretrained checkpoint, optionally with the current configuration hash.
         
         Args:
             net: The network model to save
             optimizer_net: The optimizer to save
+            use_hash_based_naming: Whether to save additional checkpoints with hash-based names (default: False)
         """
         if self.args.state_dict_dir_net or self.args.epochs_pretrain <= 0:
             return
@@ -109,37 +110,42 @@ class CheckpointManager:
         net.eval()
         checkpoint_dir = self._ensure_checkpoint_dir_exists()
         
-        # Paths for saving
-        checkpoint_path = os.path.join(checkpoint_dir, f'net_pretrained_{self.config_hash}')
-        params_path = os.path.join(checkpoint_dir, f'net_pretrained_{self.config_hash}_params.pkl')
-        
-        # Also save with standard name for backward compatibility
+        # Standard checkpoint path (always used)
         standard_path = os.path.join(checkpoint_dir, 'net_pretrained')
         
         try:
-            # Save with hash-based name
+            # Create checkpoint data
             checkpoint_data = {
                 'model_state_dict': net.state_dict(),
                 'optimizer_net_state_dict': optimizer_net.state_dict(),
-                'config_hash': self.config_hash
+                'config_hash': self.config_hash if hasattr(self, 'config_hash') else None
             }
             
-            torch.save(checkpoint_data, checkpoint_path)
-            
-            # Save parameter details
-            with open(params_path, 'wb') as f:
-                pickle.dump(self.pretraining_params, f)
-                
-            # Also save with standard name
+            # Always save with standard name
             torch.save(checkpoint_data, standard_path)
+            print(f"Saved pretrained model to: {standard_path}", flush=True)
             
-            print(f"Saved pretrained model with hash: {self.config_hash}", flush=True)
-            print(f"Saved to: {checkpoint_path}", flush=True)
+            # Optionally save with hash-based naming
+            if use_hash_based_naming and hasattr(self, 'config_hash'):
+                # Paths for hash-based saving
+                checkpoint_path = os.path.join(checkpoint_dir, f'net_pretrained_{self.config_hash}')
+                params_path = os.path.join(checkpoint_dir, f'net_pretrained_{self.config_hash}_params.pkl')
+                
+                # Save with hash-based name
+                torch.save(checkpoint_data, checkpoint_path)
+                
+                # Save parameter details
+                if hasattr(self, 'pretraining_params'):
+                    with open(params_path, 'wb') as f:
+                        pickle.dump(self.pretraining_params, f)
+                        
+                print(f"Also saved pretrained model with hash: {self.config_hash}", flush=True)
+                print(f"Saved to: {checkpoint_path}", flush=True)
         except Exception as e:
             print(f"Error saving checkpoint: {str(e)}", flush=True)
             
         net.train()
-    
+
     def save_trained_checkpoint(self, net, optimizer_net, optimizer_classifier, epoch=None):
         """
         Save a checkpoint after training/fine-tuning.

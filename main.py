@@ -242,13 +242,15 @@ def run_pipnet(args=None):
             param.requires_grad = True
         for param in net.module._classification.parameters():
             param.requires_grad = False
-        for param in net.module._intermediate.parameters():
-            param.requires_grad = False
-        
+
         for param in params_to_freeze:
             param.requires_grad = True # can be set to False when you want to freeze more layers
         for param in params_backbone:
             param.requires_grad = False #can be set to True when you want to train whole backbone (e.g. if dataset is very different from ImageNet)
+
+        if hasattr(net.module, '_intermediate') and net.module._intermediate is not None:
+            for param in net.module._intermediate.parameters():
+                param.requires_grad = False
         
         print("\nPretrain Epoch", epoch, "with batch size", trainloader_pretraining.batch_size, flush=True)
         
@@ -293,12 +295,11 @@ def run_pipnet(args=None):
                     train_info['align_loss_weighted'], train_info['tanh_loss_weighted'], "n.a.")
     
     if args.epochs_pretrain > 0 and not resume_training:
-        net.eval()
         checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
 
     with torch.no_grad():
         topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                                k=10, are_pretraining_prototypes=True, plot_histograms=True, visualize_prototype_maps=False)
+                               k=10, are_pretraining_prototypes=True, plot_histograms=False, visualize_prototype_maps=False)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
@@ -335,8 +336,11 @@ def run_pipnet(args=None):
                 param.requires_grad = False
             for param in net.module._classification.parameters():
                 param.requires_grad = True
-            for param in net.module._intermediate.parameters():
-                param.requires_grad = True
+
+            if hasattr(net.module, '_intermediate') and net.module._intermediate is not None:
+                for param in net.module._intermediate.parameters():
+                    param.requires_grad = True
+
             finetune = True
         else:
             finetune = False
@@ -356,14 +360,15 @@ def run_pipnet(args=None):
                     if epoch > args.freeze_epochs:
                         for param in net.module._add_on.parameters():
                             param.requires_grad = True
-                        for param in net.module._intermediate.parameters():
-                            param.requires_grad = True
                         for param in params_to_freeze:
                             param.requires_grad = True
                         for param in params_to_train:
                             param.requires_grad = True
                         for param in params_backbone:
                             param.requires_grad = True
+                        if hasattr(net.module, '_intermediate') and net.module._intermediate is not None:
+                            for param in net.module._intermediate.parameters():
+                                param.requires_grad = True
 
                         frozen = False
                         print(f'Training everything...')
@@ -372,13 +377,15 @@ def run_pipnet(args=None):
                         for param in params_to_freeze:
                             param.requires_grad = True
                         for param in net.module._add_on.parameters():
-                            param.requires_grad = True
-                        for param in net.module._intermediate.parameters():
-                            param.requires_grad = True                            
+                            param.requires_grad = True                         
                         for param in params_to_train:
                             param.requires_grad = True
                         for param in params_backbone:
                             param.requires_grad = False
+                        if hasattr(net.module, '_intermediate') and net.module._intermediate is not None:
+                            for param in net.module._intermediate.parameters():
+                                param.requires_grad = True
+
                         print(f'Training train + freeze params...')
         
         print("\n Epoch", epoch, 
