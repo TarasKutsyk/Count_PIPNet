@@ -1,5 +1,3 @@
 [
-    "configs/full_linear.yaml",
-    "configs/linear.yaml",
-    "configs/identity.yaml"
+    "configs/fixed_linear"
 ]

@@ -60,6 +60,10 @@ def get_args() -> argparse.Namespace:
                         type=float,
                         default=0.05, 
                         help='The optimizer learning rate for training the weights from prototypes to classes')
+    parser.add_argument('--tanh_loss_coeff',
+                        type=float,
+                        default=1.0, 
+                        help='Multiplier for the tanh loss term in the loss function. This is used to control the strength of the tanh regularization on the prototypes. Set to 1 by default, can be adjusted based on dataset and performance.')
     parser.add_argument('--lr_block',
                         type=float,
                         default=0.0005, 
@@ -131,7 +135,12 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--pretrained_checkpoints_dir',
                     type=str,
                     default='',
-                    help='Directory to search for pretrained checkpoints before using the current log_dir')
+                    help='Directory to search for pretrained checkpoints before using the current log_dir that require the exact architecture match. This is useful when you want to load a specific pretrained model from a different run or experiment.')
+    
+    parser.add_argument('--shared_pretrained_dir',
+                    type=str,
+                    default='',
+                    help='Directory to search for pretrained checkpoints without requiring the exact artchitecture match')
     parser.add_argument('--resume_training',
                     action='store_true',
                     help='Resume training from the last checkpoint')
@@ -162,6 +171,11 @@ def get_args() -> argparse.Namespace:
                     type=str,
                     default='onehot',
                     help='Type of intermediate layer to use for CountPIPNet: "onehot" (original) or "linear"')
+    parser.add_argument('--train_intermediate',
+                    type=eval,
+                    choices=[True, False],
+                    default=True,
+                    help='Whether to train the intermediate layer in CountPIPNet')
     parser.add_argument('--enforce_weight_sparsity',
                         type=eval,
                         choices=[True, False],
@@ -294,7 +308,7 @@ def get_optimizer_nn(net, args: argparse.Namespace):
         {"params": classification_bias, "lr": args.lr, "weight_decay": 0.0},
     ]
 
-    if hasattr(net.module, '_intermediate'):
+    if hasattr(net.module, '_intermediate') and args.train_intermediate:
         paramlist_classifier.append(
             {"params": net.module._intermediate.parameters(), "lr": args.lr, "weight_decay": args.weight_decay}
         )

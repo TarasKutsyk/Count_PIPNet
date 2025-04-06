@@ -1,6 +1,6 @@
-# CountPIPNet MNIST Configuration
+# CountPIPNet Shapes Configuration
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
-dataset: geometric_shapes_224_gaussian_noise           # Dataset name as defined in data.py
+dataset: geometric_shapes_gaussian_noise           # Dataset name as defined in data.py
 
 pretrained_checkpoints_dir: ''
 resume_training: False
@@ -12,6 +12,7 @@ num_stages: 3                    # Number of stages to use when using middle lay
 num_features: 16                   # Number of prototypes (0 = use backbone's output channel count)
 activation: 'gumbel_softmax'  # Options: 'gumbel_softmax', 'softmax'
 intermediate_layer: linear # Options: 'linear', 'onehot', 'bilinear', 'identity', 'linear_full'
+train_intermediate: True          # Whether to train the intermediate layer for CountPIPNet
 enforce_weight_sparsity: True
 
 # Logging and output
@@ -26,7 +27,7 @@ disable_pretrained: False         # When False, uses weights pretrained on Image
 # Training parameters
 batch_size: 64                    # Batch size for main training phase
 batch_size_pretrain: 128         # Batch size for prototype pretraining phase
-epochs: 100                        # Number of training epochs (main phase)
+epochs: 50                        # Number of training epochs (main phase)
 epochs_pretrain: 10               # Number of prototype pretraining epochs
 epochs_finetune: 0
 freeze_epochs: 10                 # Number of epochs to keep early backbone layers frozen

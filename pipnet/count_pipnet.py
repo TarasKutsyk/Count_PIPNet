@@ -77,7 +77,6 @@ class CountPIPNet(nn.Module):
         # Sum over spatial dimensions to count prototype occurrences
         counts = proto_features.sum(dim=(2, 3))  # [batch_size, num_prototypes]
         
-        # During inference, we may want to round to nearest integer for cleaner counts
         if self._use_ste:
             # During training with STE, we round in forward pass but pass gradients through
             rounded_counts = self.ste_round(counts)
@@ -86,9 +85,10 @@ class CountPIPNet(nn.Module):
         
         # Clamp to max_count
         clamped_counts = torch.clamp(rounded_counts, 0, self._max_count)
-        
+            
         # Process through intermediate layer
         intermediate_features = self._intermediate(clamped_counts)
+        # E.g., if intermediate layer is OneHotEncoder, this will be [batch_size, num_prototypes * max_count]
         
         # Apply classification layer
         out = self._classification(intermediate_features)  # [batch_size, num_classes]
@@ -289,7 +289,8 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'onehot':
         # Use one-hot encoder (original approach)
-        intermediate_layer = OneHotEncoder(max_count, use_ste=use_ste)
+        intermediate_layer = OneHotEncoder(max_count, use_ste=use_ste, respect_positive_current=True, 
+                                           num_prototypes=num_prototypes, device=device)
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'identity':
         # Identity intermediate layer

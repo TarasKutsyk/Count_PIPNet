@@ -1,6 +1,6 @@
-# CountPIPNet MNIST Configuration
+# CountPIPNet Shapes Configuration
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
-dataset: geometric_shapes_224_gaussian_noise           # Dataset name as defined in data.py
+dataset: geometric_shapes_gaussian_noise           # Dataset name as defined in data.py
 
 pretrained_checkpoints_dir: ''
 resume_training: False
@@ -15,7 +15,7 @@ intermediate_layer: linear_full # Options: 'linear', 'onehot', 'bilinear', 'iden
 enforce_weight_sparsity: True
 
 # Logging and output
-log_dir: ./runs/45_shapesGN_linear_full # Directory for saving logs and checkpoints
+log_dir: '' # Directory for saving logs and checkpoints
 dir_for_saving_images: visualization_results_shapes # Directory for prototype visualizations
 
 # Network architecture

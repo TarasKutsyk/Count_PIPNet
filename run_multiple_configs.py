@@ -51,6 +51,13 @@ def parse_command_line_args():
                         type=str,
                         default='',
                         help='Path to YAML config file for pretraining (if different from regular configs)')
+    parser.add_argument('--fresh_pretraining',
+                        action='store_true',
+                        help='Do fresh pretraining for each configuration (default: False)')
+    parser.add_argument('--individual_pretraining_epochs',
+                        type=int,
+                        default=None,
+                        help='Override pretraining epochs for individual runs when using fresh_pretraining')
     
     return parser.parse_args()
 
@@ -176,8 +183,8 @@ def run_all_configs(cmd_args):
     
     print(f"Found {len(config_list)} configurations to run")
     
-    # Verify that pretraining parameters are compatible
-    if cmd_args.shared_pretrained_dir or cmd_args.pretraining_only_first_run:
+    # Verify that pretraining parameters are compatible if using shared pretraining
+    if (cmd_args.shared_pretrained_dir or cmd_args.pretraining_only_first_run) and not cmd_args.fresh_pretraining:
         compatible = verify_compatible_pretraining_params(config_list)
         if not compatible:
             print("Warning: Configurations have incompatible pretraining parameters.")
@@ -196,11 +203,11 @@ def run_all_configs(cmd_args):
     # Track results for summary
     results = []
     
-    # Handle pretraining separately if requested
+    # Handle shared pretraining if requested and not using fresh pretraining
     shared_pretrained_dir = cmd_args.shared_pretrained_dir
     
-    if cmd_args.pretraining_only_first_run and not shared_pretrained_dir:
-        print("\n=== Performing pretraining in first run ===")
+    if cmd_args.pretraining_only_first_run and not cmd_args.fresh_pretraining and not shared_pretrained_dir:
+        print("\n=== Performing shared pretraining in first run ===")
         
         # Use pretraining config if provided, otherwise use first config
         pretraining_config_path = cmd_args.pretraining_config if cmd_args.pretraining_config else config_list[0]
@@ -247,9 +254,22 @@ def run_all_configs(cmd_args):
                 config_path, 
                 run_index=i+1,
                 base_log_dir=cmd_args.base_log_dir, 
-                gpu_ids=cmd_args.gpu_ids,
-                shared_pretrained_dir=shared_pretrained_dir
+                gpu_ids=cmd_args.gpu_ids
             )
+            
+            # Handle pretraining options
+            if cmd_args.fresh_pretraining:
+                # Force fresh pretraining for this run
+                run_args.shared_pretrained_dir = ''
+                # Override pretraining epochs if specified
+                if cmd_args.individual_pretraining_epochs is not None:
+                    run_args.epochs_pretrain = cmd_args.individual_pretraining_epochs
+                print(f"Using fresh pretraining with {run_args.epochs_pretrain} epochs")
+            elif shared_pretrained_dir:
+                # Use shared pretraining
+                run_args.shared_pretrained_dir = shared_pretrained_dir
+                run_args.epochs_pretrain = 0
+                print(f"Using shared pretrained model from: {shared_pretrained_dir}")
             
             # Log the actual configuration being used
             print(f"Running with configuration:")
@@ -284,8 +304,7 @@ def run_all_configs(cmd_args):
             "config_path": config_path,
             "status": run_status,
             "duration": run_duration,
-            "log_dir": run_args.log_dir if 'run_args' in locals() else None,
-            "pretrained_checkpoint": run_args.shared_pretrained_dir
+            "log_dir": run_args.log_dir if 'run_args' in locals() else None
         })
         
         # Print summary after each run

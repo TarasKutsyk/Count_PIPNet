@@ -256,7 +256,8 @@ def run_pipnet(args=None):
         train_info = train_pipnet(net, trainloader_pretraining, optimizer_net, optimizer_classifier, 
                                   scheduler_net, None, criterion, epoch, args.epochs_pretrain, device, 
                                   is_count_pipnet=is_count_pipnet, pretrain=True, finetune=False,
-                                  enforce_weight_sparsity=args.enforce_weight_sparsity)
+                                  enforce_weight_sparsity=args.enforce_weight_sparsity,
+                                  tanh_loss_coeff=args.tanh_loss_coeff)
         
         # For CountPiPNet anneal the Gumbel-Softmax temperature
         if hasattr(args, 'model') and args.model == 'count_pipnet' and use_gumbel_softmax:
@@ -297,7 +298,7 @@ def run_pipnet(args=None):
 
     with torch.no_grad():
         topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                                k=10, are_pretraining_prototypes=True, plot_histograms=False, visualize_prototype_maps=False)
+                                k=10, are_pretraining_prototypes=True, plot_histograms=True, visualize_prototype_maps=False)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
@@ -396,7 +397,8 @@ def run_pipnet(args=None):
         train_info = train_pipnet(net, trainloader, optimizer_net, optimizer_classifier, scheduler_net, 
                                   scheduler_classifier, criterion, epoch, args.epochs, device, 
                                   is_count_pipnet=is_count_pipnet, pretrain=False, finetune=finetune,
-                                  enforce_weight_sparsity=args.enforce_weight_sparsity)
+                                  enforce_weight_sparsity=args.enforce_weight_sparsity,
+                                  tanh_loss_coeff=args.tanh_loss_coeff)
 
         lrs_net+=train_info['lrs_net']
         lrs_classifier+=train_info['lrs_class']
@@ -432,7 +434,6 @@ def run_pipnet(args=None):
         
     topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args,
                            plot_histograms=False, visualize_prototype_maps=False)
-    # visualize(net, projectloader, len(classes), device, 'visualised_prototypes', args)
 
     # Now load and visualize the best model's prototypes
     print("\nLoading best model for prototype visualization...", flush=True)

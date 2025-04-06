@@ -1,6 +1,7 @@
 data/
 visualizations/
 runs/
+configs/
 
 # Mac OS-specific storage files
 .DS_Store

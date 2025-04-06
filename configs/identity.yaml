@@ -1,6 +1,6 @@
-# CountPIPNet MNIST Configuration
+# CountPIPNet Shapes Configuration
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
-dataset: geometric_shapes_224_gaussian_noise           # Dataset name as defined in data.py
+dataset: geometric_shapes_gaussian_noise           # Dataset name as defined in data.py
 
 pretrained_checkpoints_dir: ''
 resume_training: False
@@ -15,7 +15,7 @@ intermediate_layer: identity # Options: 'linear', 'onehot', 'bilinear', 'identit
 enforce_weight_sparsity: True
 
 # Logging and output
-log_dir: ./runs/45_shapesGN_identity # Directory for saving logs and checkpoints
+log_dir: '' # Directory for saving logs and checkpoints
 dir_for_saving_images: visualization_results_shapes # Directory for prototype visualizations
 
 # Network architecture
@@ -26,7 +26,7 @@ disable_pretrained: False         # When False, uses weights pretrained on Image
 # Training parameters
 batch_size: 64                    # Batch size for main training phase
 batch_size_pretrain: 128         # Batch size for prototype pretraining phase
-epochs: 100                        # Number of training epochs (main phase)
+epochs: 50                        # Number of training epochs (main phase)
 epochs_pretrain: 10               # Number of prototype pretraining epochs
 epochs_finetune: 0
 freeze_epochs: 10                 # Number of epochs to keep early backbone layers frozen

@@ -1,8 +1,8 @@
-# CountPIPNet MNIST Configuration
+# CountPIPNet Shapes Configuration
 model: count_pipnet               # Model type: 'pipnet' for original or 'count_pipnet' for counting-aware version
 dataset: geometric_shapes_gaussian_noise           # Dataset name as defined in data.py
 
-pretrained_checkpoints_dir: './runs/45_shapesGN_linear'
+pretrained_checkpoints_dir: './runs/45_shapesGN_onehot'
 resume_training: False
 
 max_count: 3                      # Maximum count value to track; counts >= max_count get mapped to max_count category
@@ -11,11 +11,12 @@ use_mid_layers: True              # Use only middle layers of the backbone netwo
 num_stages: 3                     # Number of stages to use when using middle layers
 num_features: 16                   # Number of prototypes (0 = use backbone's output channel count)
 activation: 'gumbel_softmax'  # Options: 'gumbel_softmax', 'softmax'
-intermediate_layer: linear # Options: 'linear', 'onehot', 'bilinear', 'identity', 'linear_full'
+intermediate_layer: onehot # Options: 'linear', 'onehot', 'bilinear', 'identity', 'linear_full'
 enforce_weight_sparsity: True
+tanh_loss_coeff: 0.01
 
 # Logging and output
-log_dir: ./runs/45_shapesGN_linear # Directory for saving logs and checkpoints
+log_dir: ./runs/45_shapesGN_onehot # Directory for saving logs and checkpoints
 dir_for_saving_images: visualization_results_shapes # Directory for prototype visualizations
 
 # Network architecture
@@ -42,7 +43,7 @@ weight_decay: 0.0                 # L2 regularization strength (0.0 = no regular
 validation_size: 0.0              # Fraction of training data to use for validation (0.0 = use separate test set)
 weighted_loss: False              # Whether to weight loss by inverse class frequency
 seed: 1                           # Random seed for reproducibility
-gpu_ids: '3'                      # GPU IDs to use (comma-separated for multiple GPUs)
+gpu_ids: '2'                      # GPU IDs to use (comma-separated for multiple GPUs)
 num_workers: 8                    # Number of CPU threads for data loading
 bias: False                       # Whether to use bias terms in classification layer
 disable_cuda: False               # When True, forces CPU usage even if GPU is available

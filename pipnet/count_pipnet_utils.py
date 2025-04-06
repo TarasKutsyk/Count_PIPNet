@@ -60,15 +60,20 @@ class OneHotEncoder(nn.Module):
     Converts count values to modified encodings where count 0 maps to all zeros.
     Can operate with or without Straight-Through Estimator for backpropagation.
     """
-    def __init__(self, num_bins: int = 4, use_ste: bool = False):
+    def __init__(self, num_bins: int = 4, use_ste: bool = False, respect_positive_current: bool = False,
+                 num_prototypes: int = None, device: Optional[torch.device] = None):
         """
         Args:
             num_bins: Number of count bins (0, 1, 2, 3+)
             use_ste: Whether to use Straight-Through Estimator for gradient computation
+            respect_positive_current: Whether to respect positive gradients at current position
         """
         super().__init__()
         self.num_bins = num_bins
+        self.num_prototypes = num_prototypes
+        self.device = device
         self.use_ste = use_ste
+        self.respect_positive_current = respect_positive_current
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -78,15 +83,30 @@ class OneHotEncoder(nn.Module):
             x: Input tensor of counts [batch_size, num_prototypes]
             
         Returns:
-            Encoded tensor [batch_size, num_prototypes, num_bins]
+            Encoded tensor [batch_size, num_prototypes * num_bins]
         """
         if self.use_ste:
-            encodings = ModifiedSTEFunction.apply(x, self.num_bins)
+            encodings = ModifiedSTEFunction.apply(x, self.num_bins, self.respect_positive_current)
         else:
             encodings = create_modified_encoding(x, self.num_bins)
 
         encodings_flattened = encodings.view(encodings.size(0), -1)
         return encodings_flattened
+
+    def prototype_to_classifier_input_weights(self, prototype_idx):
+        """
+        Returns a vector of length (num_prototypes * num_bins) where the contiguous segment corresponding
+        to the given prototype (i.e. indices [prototype_idx * num_bins, (prototype_idx+1) * num_bins))
+        is filled with ones, and all other entries are zeros.
+        """
+        total_length = self.num_prototypes * self.num_bins
+        relevance_vector = torch.zeros(total_length, device=self.device)
+
+        start_idx = prototype_idx * self.num_bins
+        end_idx = start_idx + self.num_bins
+
+        relevance_vector[start_idx:end_idx] = 1.0
+        return relevance_vector
 
 def create_modified_encoding(x: torch.Tensor, max_count: int) -> torch.Tensor:
     """
@@ -138,114 +158,126 @@ def create_modified_encoding(x: torch.Tensor, max_count: int) -> torch.Tensor:
 class ModifiedSTEFunction(torch.autograd.Function):
     """
     Straight-Through Estimator for modified count encoding.
+    Backward pass implements the "follow the max gradient" principle.
+    If max gradient is at the current position, the resulting grad is zero.
     """
     @staticmethod
-    def forward(ctx, counts: torch.Tensor, max_count: int) -> torch.Tensor:
+    def forward(ctx, counts: torch.Tensor, max_count: int, respect_positive_current: bool) -> torch.Tensor:
         """
-        Forward pass: Create modified encodings.
+        Forward pass: Create modified encodings based on rounded counts.
+        The output tensor is NOT flattened here; flattening happens in OneHotEncoder.
+
+        Args:
+            counts: Input count values [batch_size, num_prototypes].
+            max_count: Number of bins (dimension of the one-hot encoding).
+            respect_positive_current: Flag for backward pass behavior.
         """
-        # Save inputs for backward pass
-        ctx.save_for_backward(counts)
+        # Round counts for encoding determination
+        rounded_counts = counts.round()
+        # Save original counts and rounded counts for backward pass
+        ctx.save_for_backward(counts, rounded_counts)
         ctx.max_count = max_count
-        
-        # Use the shared function to create encodings
-        return create_modified_encoding(counts, max_count)
-    
+        ctx.respect_positive_current = respect_positive_current
+        # No need to store dims, shape is known from saved tensors
+
+        # Use the shared function to create encodings based on rounded values
+        # Return the 3D tensor here. Flattening is done *after* this function in OneHotEncoder.
+        return create_modified_encoding(rounded_counts, max_count)
+
     @staticmethod
-    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
+    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None, None]:
         """
-        Backward pass focusing on activation preferences.
+        Backward pass implementing the "follow the max gradient" principle.
+        If max gradient is at the current position, the resulting grad is zero.
+
+        Args:
+            ctx: Context object from forward pass.
+            grad_output: Gradient from the subsequent layer.
+                         Arrives with the 3D shape corresponding to the output of
+                         ModifiedSTEFunction.forward: [batch_size, num_prototypes, max_count].
+
+        Returns:
+            Gradient w.r.t original counts, None for max_count, None for respect_positive_current.
         """
-        counts, = ctx.saved_tensors
+        counts, rounded_counts = ctx.saved_tensors
         max_count = ctx.max_count
+        respect_positive_current = ctx.respect_positive_current
         batch_size, num_prototypes = counts.shape
-        
-        # Initialize gradient tensor
+
+        # --- grad_output arrives with shape [batch_size, num_prototypes, max_count] ---
+        # --- NO RESHAPING NEEDED HERE ---
+        if grad_output.shape[0] != batch_size or grad_output.shape[1] != num_prototypes or grad_output.shape[2] != max_count:
+             # Add a check for the *correct* expected 3D shape
+             raise ValueError(f"Unexpected grad_output shape. Expected [{batch_size}, {num_prototypes}, {max_count}], got {grad_output.shape}")
+
+        # Initialize gradient tensor for the original counts
         counts_grad = torch.zeros_like(counts)
-        
-        # Use threshold for numerical stability
-        zero_threshold = 0.1
-        zero_mask = counts < zero_threshold
-        non_zero_mask = ~zero_mask
-        
-        # Part 1: Handle zero counts
-        if torch.any(zero_mask):
-            batch_indices = torch.arange(batch_size, device=counts.device).view(-1, 1).repeat(1, num_prototypes)
-            proto_indices = torch.arange(num_prototypes, device=counts.device).view(1, -1).repeat(batch_size, 1)
-            
-            batch_idx_zeros = batch_indices[zero_mask]
-            proto_idx_zeros = proto_indices[zero_mask]
-            
-            # Get gradient for position 0 (count=1)
-            # For zeros, we only care if increasing to 1 would be beneficial
-            pos0_grad = grad_output[batch_idx_zeros, proto_idx_zeros, 0]
-            
-            # If position 0 has positive gradient, increase count
-            counts_grad[zero_mask] = pos0_grad
-        
-        # Part 2: Handle non-zero counts
+
+        # --- Calculate current activation position index ---
+        current_pos_idx = torch.clamp(rounded_counts.long() - 1, 0, max_count - 1) # Shape: [batch_size, num_prototypes]
+
+        # --- Identify zero vs non-zero counts based on rounded counts ---
+        zero_threshold = 0.1 # Use threshold for robustness
+        zero_mask = rounded_counts < zero_threshold # Where count was effectively 0
+        non_zero_mask = ~zero_mask              # Where count was effectively >= 1
+
+        # --- Find the index and value of the maximum *signed* gradient across all positions ---
+        # Use the incoming 3D grad_output directly
+        max_signed_grad_val, max_signed_grad_idx = torch.max(grad_output, dim=2) # Shape: [batch_size, num_prototypes]
+
+        # --- Process Non-Zero Count Cases ---
         if torch.any(non_zero_mask):
-            batch_indices = torch.arange(batch_size, device=counts.device).view(-1, 1).repeat(1, num_prototypes)
-            proto_indices = torch.arange(num_prototypes, device=counts.device).view(1, -1).repeat(batch_size, 1)
-            
-            batch_idx_nonzeros = batch_indices[non_zero_mask]
-            proto_idx_nonzeros = proto_indices[non_zero_mask]
-            
-            # Current counts (adjusted for 0-indexing)
-            current_counts = torch.clamp(counts[non_zero_mask].long() - 1, 0, max_count - 1)
-            
-            # Extract current position gradients
-            current_pos_grad = grad_output[batch_idx_nonzeros, proto_idx_nonzeros, current_counts]
-            
-            # Initialize with current gradient (preserving current activation if positive)
-            final_gradient = current_pos_grad.clone()
-            
-            # Now consider neighboring positions' preferences
-            
-            # 1. If count+1 position has positive gradient, we want to increase
-            # (but only if not already at max)
-            next_counts = torch.clamp(current_counts + 1, 0, max_count - 1)
-            can_increase_mask = next_counts != current_counts
-            
-            if torch.any(can_increase_mask):
-                batch_sub = batch_idx_nonzeros[can_increase_mask]
-                proto_sub = proto_idx_nonzeros[can_increase_mask]
-                next_c = next_counts[can_increase_mask]
-                
-                # Get gradient at next position
-                next_pos_grad = grad_output[batch_sub, proto_sub, next_c]
-                
-                # Only consider positive preferences for activation
-                increase_preference = torch.clamp(next_pos_grad, min=0.0)
-                
-                # Add to final gradient for affected positions
-                idx_in_nonzero = torch.where(can_increase_mask)[0]
-                final_gradient[idx_in_nonzero] += increase_preference
-            
-            # 2. If count-1 position has positive gradient, we want to decrease
-            # (but only if not already at min)
-            prev_counts = torch.clamp(current_counts - 1, 0, max_count - 1)
-            can_decrease_mask = prev_counts != current_counts
-            
-            if torch.any(can_decrease_mask):
-                batch_sub = batch_idx_nonzeros[can_decrease_mask]
-                proto_sub = proto_idx_nonzeros[can_decrease_mask]
-                prev_c = prev_counts[can_decrease_mask]
-                
-                # Get gradient at previous position
-                prev_pos_grad = grad_output[batch_sub, proto_sub, prev_c]
-                
-                # Only consider positive preferences for activation
-                decrease_preference = torch.clamp(prev_pos_grad, min=0.0)
-                
-                # Subtract from final gradient for affected positions
-                idx_in_nonzero = torch.where(can_decrease_mask)[0]
-                final_gradient[idx_in_nonzero] -= decrease_preference
-            
-            # Assign computed gradients for non-zero counts
-            counts_grad[non_zero_mask] = final_gradient
-        
-        return counts_grad, None
+            # Get relevant values for non-zero elements
+            current_pos_idx_nz = current_pos_idx[non_zero_mask]
+            max_signed_grad_val_nz = max_signed_grad_val[non_zero_mask]
+            max_signed_grad_idx_nz = max_signed_grad_idx[non_zero_mask]
+
+            # --- Apply "follow the max gradient" logic ---
+            # Initialize gradient for non-zero elements to zero.
+            final_grad_nz = torch.zeros_like(max_signed_grad_val_nz)
+
+            # Case 1: Max gradient is at a position *before* the current one (decrease desired)
+            decrease_mask = max_signed_grad_idx_nz < current_pos_idx_nz
+            final_grad_nz[decrease_mask] = -max_signed_grad_val_nz[decrease_mask] # Negative of max gradient
+
+            # Case 2: Max gradient is at a position *after* the current one (increase desired)
+            increase_mask = max_signed_grad_idx_nz > current_pos_idx_nz
+            final_grad_nz[increase_mask] = max_signed_grad_val_nz[increase_mask]  # Positive of max gradient
+
+            # Case 3: Max gradient is *at* the current position (MODIFIED: set grad to zero)
+            # No explicit assignment needed as final_grad_nz is initialized to zero.
+
+            # --- Apply Optional "Respect Positive Current Gradient" Logic ---
+            if respect_positive_current:
+                # Get the gradient specifically at the current activated position using the 3D grad_output
+                grad_at_current_pos = torch.gather(
+                    grad_output[non_zero_mask],           # Use 3D gradients for non-zero counts
+                    1,                                    # Dimension to gather along (max_count dim)
+                    current_pos_idx_nz.unsqueeze(1)       # Indices to gather
+                ).squeeze(1) # Remove added dimension
+
+                # Identify where the current gradient is positive
+                positive_current_grad_mask = grad_at_current_pos > 0
+
+                # Identify where the max gradient was *not* at the current position
+                max_not_at_current_mask = max_signed_grad_idx_nz != current_pos_idx_nz
+
+                # Zero out the calculated gradient ONLY IF respect_positive_current is True,
+                # AND the max gradient was NOT at the current position,
+                # AND the gradient at the current position was positive.
+                final_grad_nz[positive_current_grad_mask & max_not_at_current_mask] = 0.0
+
+            # Assign the calculated gradients back to the main gradient tensor
+            counts_grad[non_zero_mask] = final_grad_nz
+
+        # --- Process Zero Count Cases ---
+        if torch.any(zero_mask):
+            # Get the gradient corresponding to activating count 1 (index 0) using the 3D grad_output
+            grad_for_count_1 = grad_output[:, :, 0][zero_mask]
+            counts_grad[zero_mask] = grad_for_count_1
+
+        # Return gradient w.r.t counts, and None for the non-tensor inputs
+        return counts_grad, None, None
 
 class BilinearIntermediate(nn.Module):
     """
