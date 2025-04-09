@@ -704,6 +704,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
             count = img_data['count_group']
             if count not in count_groups:
                 count_groups[count] = []
+            # For the current prototype, form the {count -> [img_data]} structure
             count_groups[count].append(img_data)
         
         # Sample uniformly across count groups

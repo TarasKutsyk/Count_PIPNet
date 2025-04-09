@@ -15,6 +15,7 @@ from copy import deepcopy
 import json
 import torch
 import hashlib
+import yaml
 
 # Import the run_pipnet function directly, but NOT get_args
 from main import run_pipnet
@@ -205,73 +206,69 @@ def run_all_configs(cmd_args):
     
     # Handle shared pretraining if requested and not using fresh pretraining
     shared_pretrained_dir = cmd_args.shared_pretrained_dir
-    
-    if cmd_args.pretraining_only_first_run and not cmd_args.fresh_pretraining and not shared_pretrained_dir:
-        print("\n=== Performing shared pretraining in first run ===")
-        
-        # Use pretraining config if provided, otherwise use first config
-        pretraining_config_path = cmd_args.pretraining_config if cmd_args.pretraining_config else config_list[0]
-        
-        # Create a dedicated pretraining directory
-        pretraining_dir = os.path.join(cmd_args.base_log_dir, "pretraining")
-        if not os.path.exists(pretraining_dir):
-            os.makedirs(pretraining_dir)
-        
-        # Create namespace for pretraining
-        pretraining_args = create_namespace_from_config(
-            pretraining_config_path, 
-            run_index="pretrain",
-            base_log_dir=pretraining_dir, 
-            gpu_ids=cmd_args.gpu_ids
-        )
-        
-        # Override log directory
-        pretraining_args.log_dir = pretraining_dir
-        
-        # Print pretraining configuration
-        print("Pretraining with configuration:")
-        for key, value in vars(pretraining_args).items():
-            print(f"  {key}: {value}")
-        
-        # Run pretraining
-        run_pipnet(pretraining_args)
-        
-        # Now set shared_pretrained_dir to the pretraining checkpoint
-        shared_pretrained_dir = os.path.join(pretraining_dir, "checkpoints", "net_pretrained")
-        print(f"Using shared pretrained model from: {shared_pretrained_dir}")
+
+    # Dictionary to store paths to already completed pretraining checkpoints
+    # Key: tuple(seed, num_stages, num_features), Value: path to 'net_pretrained'
+    pretrained_checkpoints = {}
     
     # Run each full training configuration
     for i, config_path in enumerate(config_list):
         print(f"\n{'='*80}")
         print(f"Starting run {i+1}/{len(config_list)}: {config_path}")
         print(f"{'='*80}\n")
-        
+
         run_start_time = time.time()
-        
+        current_run_shared_pretrained_dir = None # Reset for each run
+        perform_pretraining_this_run = False # Flag to track if this run does the pretraining
+
         try:
-            # Create namespace for this run
+            # Load the specific config for this run to extract pretraining keys
+            with open(config_path, 'r') as f:
+                current_config_data = yaml.safe_load(f)
+
+            # --- NEW: Extract pretraining key parameters ---
+            seed = current_config_data.get('seed') # Default seed if not specified
+            num_stages = current_config_data.get('num_stages') # Default num_stages
+            num_features = current_config_data.get('num_features') # Default num_features (means using backbone output channels)
+            use_mid_layers = current_config_data.get('use_mid_layers', True)
+
+            # Ensure num_stages is only relevant if use_mid_layers is True
+            if not use_mid_layers:
+                num_stages = -1 # Use a placeholder if mid_layers are not used
+
+            pretrain_key = (seed, num_stages, num_features)
+
+            # Create namespace for this run (as before)
             run_args = create_namespace_from_config(
-                config_path, 
+                config_path,
                 run_index=i+1,
-                base_log_dir=cmd_args.base_log_dir, 
+                base_log_dir=cmd_args.base_log_dir,
                 gpu_ids=cmd_args.gpu_ids
             )
-            
-            # Handle pretraining options
+
             if cmd_args.fresh_pretraining:
-                # Force fresh pretraining for this run
+                # Force fresh pretraining for this run, ignore shared logic
                 run_args.shared_pretrained_dir = ''
-                # Override pretraining epochs if specified
+                # Override pretraining epochs if specified (optional, keep if needed)
                 if cmd_args.individual_pretraining_epochs is not None:
                     run_args.epochs_pretrain = cmd_args.individual_pretraining_epochs
-                print(f"Using fresh pretraining with {run_args.epochs_pretrain} epochs")
-            elif shared_pretrained_dir:
-                # Use shared pretraining
-                run_args.shared_pretrained_dir = shared_pretrained_dir
-                run_args.epochs_pretrain = 0
-                print(f"Using shared pretrained model from: {shared_pretrained_dir}")
-            
-            # Log the actual configuration being used
+                print(f"INFO: Fresh pretraining requested. Performing pretraining (if epochs > 0) for this run.")
+                perform_pretraining_this_run = run_args.epochs_pretrain > 0
+
+            elif pretrain_key in pretrained_checkpoints:
+                # Found an existing checkpoint for this key
+                run_args.shared_pretrained_dir = pretrained_checkpoints[pretrain_key]
+                run_args.epochs_pretrain = 0 # Don't pretrain again
+                print(f"INFO: Found shared pretrain checkpoint for key {pretrain_key}. Loading from: {run_args.shared_pretrained_dir}")
+                current_run_shared_pretrained_dir = run_args.shared_pretrained_dir # Store for potential use later if needed
+
+            else:
+                # No checkpoint found for this key, this run will do the pretraining (if epochs > 0)
+                run_args.shared_pretrained_dir = '' # Ensure it doesn't load anything accidentally
+                print(f"INFO: No shared pretrain checkpoint found for key {pretrain_key}. Performing pretraining (if epochs > 0) in run: {run_args.log_dir}")
+                perform_pretraining_this_run = run_args.epochs_pretrain > 0
+
+            # Log the actual configuration being used (as before)
             print(f"Running with configuration:")
             for arg in vars(run_args):
                 val = getattr(run_args, arg)
@@ -280,33 +277,47 @@ def run_all_configs(cmd_args):
                     print(f"  {arg}: {val[:50]}...{val[-50:]}")
                 else:
                     print(f"  {arg}: {val}")
-            
-            # Run PIPNet with these arguments
+
+            # Run PIPNet with these arguments (as before)
             run_pipnet(run_args)
-            
+
             run_status = "completed"
+
+            # Store checkpoint path if pretraining was done successfully ---
+            if perform_pretraining_this_run and pretrain_key not in pretrained_checkpoints:
+                 # Check if the pretraining checkpoint was actually created
+                expected_checkpoint_path = os.path.join(run_args.log_dir, "checkpoints", "net_pretrained")
+                if os.path.exists(expected_checkpoint_path):
+                    pretrained_checkpoints[pretrain_key] = expected_checkpoint_path
+                    print(f"INFO: Stored pretrained checkpoint for key {pretrain_key} at: {expected_checkpoint_path}")
+                else:
+                     print(f"WARNING: Pretraining was expected for key {pretrain_key} in {run_args.log_dir}, but checkpoint file not found at {expected_checkpoint_path}. It will be re-run if encountered again.")
+
         except Exception as e:
             run_status = f"failed: {str(e)}"
             print(f"Error during run {i+1}: {e}")
             import traceback
             traceback.print_exc()
-            
+
             if not cmd_args.continue_on_error:
                 print("Aborting remaining runs due to error")
                 sys.exit(1)
-        
+
         run_end_time = time.time()
         run_duration = run_end_time - run_start_time
-        
+
         # Record the results
         results.append({
             "run_index": i+1,
             "config_path": config_path,
             "status": run_status,
             "duration": run_duration,
-            "log_dir": run_args.log_dir if 'run_args' in locals() else None
+            "log_dir": getattr(run_args, 'log_dir', None), # Use getattr for safety
+            "pretrain_key": pretrain_key,
+            "pretraining_run": perform_pretraining_this_run,
+            "loaded_checkpoint": current_run_shared_pretrained_dir
         })
-        
+
         # Print summary after each run
         print(f"\n{'='*80}")
         print(f"Run {i+1}/{len(config_list)} {run_status}")

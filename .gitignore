@@ -11,6 +11,10 @@ evaluations/
 *.swp
 *.swo
 
+pipnet/train_clamp.py
+main_clamp.py
+run_multiple_configs_clamp.py
+
 ## https://github.com/github/gitignore/blob/4488915eec0b3a45b5c63ead28f286819c0917de/Python.gitignore
 
 # Byte-compiled / optimized / DLL files
