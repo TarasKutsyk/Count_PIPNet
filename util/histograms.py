@@ -1,402 +1,797 @@
-import matplotlib.pyplot as plt
+# histograms.py
+
 import numpy as np
 import os
-import seaborn as sns
-from tqdm import tqdm
-from scipy import stats
-
-from tqdm import tqdm
-import argparse
+import plotly.graph_objects as go
 import torch
-import torch.nn.functional as F
 import torch.utils.data
-import os
-# Required imports for visualization
-from PIL import Image, ImageDraw as D
-import torchvision.transforms as transforms
-import torchvision
-from util.func import get_patch_size
-import random
+from tqdm import tqdm
+from typing import List, Dict, Tuple, Optional, Callable, Union
 
-def class_idx_to_name(idx):
+# --- Default Helper Functions (Can be replaced by user's implementations) ---
+
+def class_idx_to_name(idx: int) -> str:
+    """
+    Default implementation to map a class index (integer) to a
+    human-readable class name (string).
+    """
+    # Example mapping, replace with actual dataset class names if needed
     match = {
-        0: "1 Cir",
-        1: "1 Tri",
-        2: "1 Hex",
-        3: "2 Cir",
-        4: "2 Tri",
-        5: "2 Hex",
-        6: "3 Cir",
-        7: "3 Tri",
-        8: "3 Hex",
+        0: "1 Circle", 1: "1 Triangle", 2: "1 Hexagon",
+        3: "2 Circles", 4: "2 Triangles", 5: "2 Hexagons",
+        6: "3 Circles", 7: "3 Triangles", 8: "3 Hexagons",
     }
+    return match.get(idx, f"Class {idx}") # Fallback for unknown indices
 
-    return match.get(idx, f"Class {idx}")  # Fallback to generic if not found
 
-def plot_prototype_activations_by_class(net, dataloader, device, output_dir, 
-                                        only_important_prototypes=True, 
-                                        prototype_importance=None,
-                                        importance_threshold=1e-1,
-                                        is_count_pipnet=None, 
-                                        max_images=10000,
-                                        class_idx_to_name=class_idx_to_name):
+def net_forward(
+    xs: torch.Tensor,
+    net: torch.nn.Module,
+    is_count_pipnet: bool = True
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Plot class-conditional density plots of prototype activations.
-    
-    This function visualizes how different classes activate each prototype by creating
-    density plots that show activation distributions per class. For CountPIPNet models,
-    it adapts to handle discrete count values appropriately.
-    
+    Performs a forward pass through the network, handling the specific
+    inference mode required by different PIPNet variants.
+
     Args:
-        net: The model (PIPNet or CountPIPNet)
-        dataloader: DataLoader for the dataset
-        device: Device to run the model on
-        output_dir: Directory to save the plots
-        only_important_prototypes: If True, only plot prototypes relevant to classification
-        prototype_importance: 1-D tensor of shape [num_prototypes] containing prototype importance scores
-        importance_threshold: Threshold for considering a prototype important
-        is_count_pipnet: Whether the model is CountPIPNet (auto-detected if None)
-        max_images: Maximum number of images to process (to prevent memory issues)
-        class_idx_to_name: Function that maps class indices to class names
-    
+        xs: Input image tensor batch.
+        net: The trained PIPNet or CountPIPNet model.
+        is_count_pipnet: Boolean flag indicating the model type.
+
     Returns:
-        List of prototype indices that were visualized
+        A tuple containing:
+        - proto_features: Raw feature maps before pooling.
+        - pooled: Pooled activation values (raw counts for CountPIPNet in non-inference).
+        - out: Final classification layer output logits.
     """
-    import plotly.graph_objects as go
-    import os
-    import numpy as np
-    from tqdm import tqdm
-    import torch
-    from scipy import stats
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Auto-detect if the model is CountPIPNet
-    if is_count_pipnet is None:
-        is_count_pipnet = hasattr(net.module, '_max_count')
-    
-    # Get max_count for CountPIPNet
-    max_count = net.module._max_count if is_count_pipnet else None
-    
-    # Determine important prototypes based on classification weights
-    num_prototypes = net.module._num_prototypes
-    
-    # Default class name function if not provided
-    if class_idx_to_name is None:
-        class_idx_to_name = lambda idx: f"Class {idx}"
-    
-    # Decide which prototypes to plot
-    if only_important_prototypes and prototype_importance is not None:
-        prototypes_to_plot = torch.where(prototype_importance > importance_threshold)[0].tolist()
-        if not prototypes_to_plot:
-            print("No prototypes with importance > threshold. Plotting all prototypes.")
-            prototypes_to_plot = list(range(num_prototypes))
-    else:
-        prototypes_to_plot = list(range(num_prototypes))
-    
-    # Collect activation values for each prototype along with class labels
-    net.eval()
-    
-    # Lists to store activations and corresponding class labels
-    all_activations = []
-    all_class_labels = []
-    
+    # CountPIPNet requires non-inference mode during analysis to get raw counts
+    run_in_inference_mode = not is_count_pipnet
+
     with torch.no_grad():
-        for idx, (xs, ys) in enumerate(tqdm(dataloader, desc="Collecting activations")):
-            if idx >= max_images:
+        # Assuming the network's forward method signature is consistent
+        proto_features, pooled, out = net(xs, inference=run_in_inference_mode)
+
+    return proto_features, pooled, out
+
+# --- Data Collection Helper ---
+
+def _collect_activations(
+    net: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    is_count_pipnet: bool,
+    max_images: int,
+    num_prototypes: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """
+    Collects pooled prototype activations and corresponding ground-truth class labels
+    from the provided dataloader, essential for subsequent analysis.
+
+    Args:
+        net: The trained model.
+        dataloader: DataLoader providing image batches and labels.
+        device: Computation device ('cuda' or 'cpu').
+        is_count_pipnet: Flag indicating the model type.
+        max_images: Maximum number of images to process.
+        num_prototypes: Expected number of prototypes from the model.
+
+    Returns:
+        Tuple (activations, labels) as numpy arrays, or (None, None) on failure.
+    """
+    net.eval() # Ensure model is in evaluation mode
+    all_activations_list = []
+    all_class_labels_list = []
+    processed_images = 0
+
+    print(f"Collecting activations from up to {max_images} images...")
+
+    # Use tqdm for progress visualization
+    pbar_collect = tqdm(dataloader, desc="Collecting activations", ncols=100, leave=False)
+    with torch.no_grad():
+        for xs, ys in pbar_collect:
+            # Stop if the image limit has been reached
+            if processed_images >= max_images:
                 break
-                
+
             xs = xs.to(device)
-            
-            # Get pooled activations
-            _, pooled, _ = net_forward(xs, net, is_count_pipnet)
-            
-            # Store activations and class labels
-            all_activations.append(pooled.cpu())
-            all_class_labels.append(ys.cpu())
-    
-    # Concatenate all collected data
-    all_activations = torch.cat(all_activations, dim=0)
-    all_class_labels = torch.cat(all_class_labels, dim=0)
-    
-    # Get unique classes
-    unique_classes = torch.unique(all_class_labels).tolist()
-    
-    # Define a color palette for classes with higher saturation and contrast
-    bright_colors = [
-        "#FF4500", "#00CED1", "#FFD700", "#32CD32", "#BA55D3",
-        "#FF6347", "#4169E1", "#2E8B57", "#FF1493", "#1E90FF",
-        "#FF8C00", "#00FA9A", "#9932CC", "#00BFFF", "#FF69B4"
-    ]
-    class_colors = {cls: bright_colors[i % len(bright_colors)] for i, cls in enumerate(unique_classes)}
-    
-    # Process each prototype
-    for p in prototypes_to_plot:
-        # Get activations for this prototype
-        proto_activations = all_activations[:, p].numpy()
-        
-        # Create figure for this prototype
-        fig = go.Figure()
-        
-        # Set up x-axis range with appropriate padding
-        if is_count_pipnet:
-            actual_max = np.max(proto_activations)
-            x_max = max(max_count + 1, actual_max * 1.1)
-            x_range = [0, x_max]
-        else:
-            non_zero_activations = proto_activations[proto_activations > 0.01]
-            x_max = np.max(non_zero_activations) * 1.1 if len(non_zero_activations) > 0 else 1.0
-            x_range = [0, x_max]
-        
-        # Process zero activations separately to avoid dominating the plot
-        zero_mask = proto_activations < 0.01
-        zero_counts = {cls: np.sum(zero_mask & (all_class_labels == cls).numpy()) for cls in unique_classes}
-        zero_pct = np.sum(zero_mask) / len(proto_activations) * 100
-        
-        # Determine class activity for sorting - how frequently each class activates this prototype
-        class_activity = {}
-        for cls in unique_classes:
-            class_mask = all_class_labels == cls
-            class_activations = proto_activations[class_mask.numpy()]
-            non_zero_activations = class_activations[class_activations > 0.01]
-            
-            class_activity[cls] = len(non_zero_activations) / len(class_activations) if len(class_activations) > 0 else 0
-        
-        # Sort classes by activity level (most active first)
-        sorted_classes = sorted(class_activity.items(), key=lambda x: x[1], reverse=True)
-        
-        # Gather all class data
-        all_class_data = {}
-        for cls, _ in sorted_classes:
-            class_mask = all_class_labels == cls
-            class_activations = proto_activations[class_mask.numpy()]
-            non_zero_activations = class_activations[class_activations > 0.01]
-            
-            if len(non_zero_activations) > 0:
-                all_class_data[cls] = non_zero_activations
-        
-        # Scale factor to make bars a reasonable height
-        scaling_factor = 0.3
-        
-        # Create visualization for each class
-        class_traces = []
-        
-        for cls, activity in sorted_classes:
-            class_mask = all_class_labels == cls
-            class_activations = proto_activations[class_mask.numpy()]
-            non_zero_activations = class_activations[class_activations > 0.01]
-            
-            if len(non_zero_activations) == 0:
+            current_batch_size = xs.size(0)
+
+            # Determine how many images from this batch fit within the limit
+            remaining_slots = max_images - processed_images
+            actual_batch_size = min(current_batch_size, remaining_slots)
+
+            # If no more images can be processed, skip the rest of the batch loop
+            if actual_batch_size <= 0:
                 continue
-                
-            # Thicker lines for important classes (top 3)
-            line_width = 4 if cls in [c for c, _ in sorted_classes[:3]] else 2
-            class_name = class_idx_to_name(cls)
-            
-            # Determine if histogram or KDE approach is needed
-            use_histogram = (
-                len(non_zero_activations) <= 10 or 
-                np.std(non_zero_activations) < 1e-6 or 
-                len(np.unique(non_zero_activations)) < 3
-            )
-            
-            if not use_histogram:
-                try:
-                    # Create KDE
-                    kde = stats.gaussian_kde(non_zero_activations, bw_method='scott')
-                    x_grid = np.linspace(0.01, x_range[1], 500)
-                    y_density = kde(x_grid)
-                    
-                    # Scale density to reasonable height
-                    max_y = np.max(y_density)
-                    scaled_density = y_density / max_y * scaling_factor
-                    
-                    # Add density curve
-                    class_traces.append(go.Scatter(
-                        x=x_grid,
-                        y=scaled_density,
-                        mode='lines',
-                        fill='tozeroy',
-                        name=class_name,
-                        line=dict(color=class_colors[cls], width=line_width),
-                        opacity=0.7,
-                    ))
-                    
-                    # Add annotation for the peak
-                    peak_idx = np.argmax(y_density)
-                    if y_density[peak_idx] > 0.1:
-                        fig.add_annotation(
-                            x=x_grid[peak_idx],
-                            y=scaled_density[peak_idx] + 0.02,
-                            text=f"{y_density[peak_idx]:.2f}",
-                            showarrow=False,
-                            font=dict(color=class_colors[cls], size=10),
-                        )
-                except np.linalg.LinAlgError:
-                    use_histogram = True
-            
-            if use_histogram:
-                # Calculate histogram counts
-                values, counts = np.unique(non_zero_activations, return_counts=True)
-                normalized_counts = counts / len(non_zero_activations)
-                
-                # Scale for consistent visualization
-                max_val = np.max(normalized_counts)
-                scaled_counts = normalized_counts / max_val * scaling_factor
-                
-                # Determine visualization mode
-                mode = 'lines+markers' if cls in [c for c, _ in sorted_classes[:3]] else 'lines'
-                marker = dict(size=8, symbol='circle') if mode == 'lines+markers' else dict()
-                
-                class_traces.append(go.Scatter(
-                    x=values,
-                    y=scaled_counts,
-                    mode=mode,
-                    name=class_name,
-                    line=dict(color=class_colors[cls], width=line_width),
-                    marker=marker,
-                    opacity=0.9 if mode == 'lines+markers' else 0.7,
-                ))
-                
-                # Add annotations for significant peaks
-                peak_idx = np.argmax(normalized_counts)
-                if normalized_counts[peak_idx] > 0.1:
-                    fig.add_annotation(
-                        x=values[peak_idx],
-                        y=scaled_counts[peak_idx] + 0.02,
-                        text=f"{normalized_counts[peak_idx]:.2f}",
-                        showarrow=False,
-                        font=dict(color=class_colors[cls], size=10),
-                    )
-        
-        # Add traces to figure in reverse order (so most active classes are on top)
-        for trace in reversed(class_traces):
-            fig.add_trace(trace)
-        
-        # Add an annotation about zero values
-        zero_text = f"Zero/near-zero activations: {zero_pct:.1f}% overall<br>"
-        for cls in unique_classes:
-            class_name = class_idx_to_name(cls)
-            zero_text += f"{class_name}: {zero_counts[cls]} samples<br>"
-            
-        fig.add_annotation(
-            x=0.02,
-            y=0.95,
-            xref="paper",
-            yref="paper",
-            text=zero_text,
-            showarrow=False,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="black",
-            borderwidth=1,
-        )
-        
-        # Add vertical lines for key thresholds
-        if is_count_pipnet and max_count is not None:
-            # Add lines at integer count values
-            for count in range(1, min(max_count + 1, 4)):
-                fig.add_vline(
-                    x=count, 
-                    line=dict(color="gray", width=1, dash="dash"),
-                    annotation_text=str(count),
-                    annotation_position="top"
-                )
-        else:
-            # Add 0.1 threshold line for PIPNet
-            fig.add_vline(
-                x=0.1, 
-                line=dict(color="black", width=1, dash="dash"),
-                annotation_text="0.1 Threshold",
-                annotation_position="top right"
-            )
-        
-        # Build title
-        title = f"Prototype {p} Activation by Class"
-        if is_count_pipnet and max_count is not None:
-            title += " (Count Values)"
-        if prototype_importance is not None:
-            title += f" (Importance: {prototype_importance[p].item():.4f})"
-        
-        # Add annotation for native class (with highest activity)
-        if sorted_classes:
-            native_class, native_activity = sorted_classes[0]
-            if native_activity > 0.1:
-                native_class_name = class_idx_to_name(native_class)
-                fig.add_annotation(
-                    x=0.5,
-                    y=1.05,
-                    xref="paper",
-                    yref="paper",
-                    text=f"Native Class: {native_class_name} (Activity: {native_activity:.1%})",
-                    showarrow=False,
-                    font=dict(size=14, color=class_colors[native_class]),
-                )
-        
-        # Configure layout
-        fig.update_layout(
-            title=title,
-            width=900,
-            height=600,
-            template="plotly_white",
-            xaxis_title="Activation Value" if not is_count_pipnet else "Count Value",
-            yaxis_title="Density",
-            title_x=0.5,
-            xaxis=dict(range=x_range),
-            # Set y-axis range to accommodate scaled data and annotations
-            yaxis=dict(range=[0, 0.5]),
-            legend_title="Class",
-            barmode='overlay',
-            legend=dict(
-                itemsizing='constant',
-                font=dict(size=12)
-            )
-        )
-        
-        # Save figure
-        fig.write_html(os.path.join(output_dir, f"prototype_{p}_class_distribution.html"))
-        fig.write_image(os.path.join(output_dir, f"prototype_{p}_class_distribution.png"))
-    
-    # Create a summary heatmap showing average activation by class for each prototype
-    z_data = np.zeros((len(unique_classes), len(prototypes_to_plot)))
-    
-    # Populate heatmap data with class-prototype activation values
+
+            # Slice the batch if processing fewer images than available
+            if actual_batch_size < current_batch_size:
+                xs = xs[:actual_batch_size]
+                ys = ys[:actual_batch_size]
+
+            # Perform the forward pass to get activations
+            try:
+                 _, pooled, _ = net_forward(xs, net, is_count_pipnet)
+            except Exception as e:
+                 print(f"\nError during forward pass: {e}. Skipping batch.")
+                 continue
+
+
+            # Validate the shape of the pooled activations
+            if pooled.ndim < 2 or pooled.shape[1] != num_prototypes:
+                 print(f"\nWarning: Unexpected pooled activation shape {pooled.shape}. Expected (batch, {num_prototypes}). Skipping batch.")
+                 continue
+
+            # Store the results from the current batch
+            all_activations_list.append(pooled.cpu())
+            all_class_labels_list.append(ys.cpu())
+            processed_images += actual_batch_size
+
+            # Update progress bar description
+            pbar_collect.set_postfix_str(f"Images: {processed_images}/{max_images}")
+
+    # Cleanly close the progress bar
+    pbar_collect.close()
+
+    # Provide final status on image collection
+    if processed_images < max_images and processed_images > 0:
+         print(f"\nFinished collecting activations (processed {processed_images} images).")
+    elif processed_images >= max_images:
+         print(f"\nReached max_images limit ({max_images}). Stopped data collection.")
+
+    # Consolidate collected data into numpy arrays
+    if not all_activations_list:
+        print("Error: No activation data was collected (list is empty).")
+        return None, None
+
+    try:
+        all_activations = torch.cat(all_activations_list, dim=0).numpy()
+        all_class_labels = torch.cat(all_class_labels_list, dim=0).numpy()
+    except Exception as e:
+        print(f"Error concatenating collected data tensors: {e}")
+        return None, None
+
+    print(f"Successfully collected activations for {all_activations.shape[0]} images. Activation matrix shape: {all_activations.shape}")
+    return all_activations, all_class_labels
+
+# --- Report Generation Helper ---
+
+def _generate_zero_report(
+    output_dir: str,
+    prototypes_analyzed_indices: List[int],
+    initial_prototypes_indices: List[int],
+    all_activations: np.ndarray,
+    near_zero_threshold: float
+) -> None:
+    """
+    Generates and saves a text report summarizing the frequency of near-zero
+    activations for the analyzed prototypes.
+
+    Args:
+        output_dir: Directory to save the report.
+        prototypes_analyzed_indices: Indices of prototypes included in the main analysis.
+        initial_prototypes_indices: Indices initially selected based on importance.
+        all_activations: Numpy array of collected activations.
+        near_zero_threshold: Activation threshold defining 'near-zero'.
+    """
+    print("Generating near-zero activation report...")
+    prototype_zero_stats: Dict[int, Dict] = {}
+    num_images_analyzed = all_activations.shape[0]
+
+    # Calculate near-zero statistics for each relevant prototype
+    for p_idx in prototypes_analyzed_indices:
+        # Ensure prototype index is valid for the collected data
+        if p_idx >= all_activations.shape[1]:
+            print(f"Warning (Report): Skipping prototype index {p_idx} - out of bounds for activations.")
+            continue
+
+        proto_activations = all_activations[:, p_idx]
+        num_samples = len(proto_activations)
+
+        if num_samples == 0:
+            continue # Should not happen if index check passed, but safe
+
+        # Calculate near-zero metrics
+        zero_mask = proto_activations < near_zero_threshold
+        num_zero = int(np.sum(zero_mask))
+        zero_pct = (num_zero / num_samples * 100.0) if num_samples > 0 else 0.0
+        prototype_zero_stats[p_idx] = {'num_zero': num_zero, 'total': num_samples, 'pct_zero': zero_pct}
+
+    # Aggregate statistics across the analyzed prototypes
+    all_zero_pcts = [stat_dict['pct_zero'] for stat_dict in prototype_zero_stats.values() if stat_dict['total'] > 0]
+    if all_zero_pcts:
+        avg_zero_pct = float(np.mean(all_zero_pcts))
+        median_zero_pct = float(np.median(all_zero_pcts))
+        std_zero_pct = float(np.std(all_zero_pcts))
+        # Count prototypes that are almost always near-zero
+        num_mostly_zero = sum(1 for pct in all_zero_pcts if pct > 95.0)
+        # Count prototypes that are essentially always near-zero (allowing for float inaccuracy)
+        num_always_zero = sum(1 for pct in all_zero_pcts if pct >= (100.0 - 1e-4))
+    else:
+        # Default values if no valid prototypes were analyzed
+        avg_zero_pct = median_zero_pct = std_zero_pct = 0.0
+        num_mostly_zero = num_always_zero = 0
+
+    # --- Format Report Content ---
+    report_lines = [
+        "="*60,
+        "      Zero/Near-Zero Activation Summary Report",
+        "="*60,
+        f"Threshold for near-zero activation: {near_zero_threshold}",
+        f"Total images analyzed: {num_images_analyzed}",
+        f"Prototypes initially selected (based on importance): {len(initial_prototypes_indices)}",
+        f"Prototypes analyzed in detail (after outlier filtering): {len(prototypes_analyzed_indices)}\n",
+        "Aggregate Statistics (based on analyzed prototypes):",
+        f"  Average % near-zero activations: {avg_zero_pct:.2f}%",
+        f"  Median % near-zero activations: {median_zero_pct:.2f}%",
+        f"  Std Dev of % near-zero activations: {std_zero_pct:.2f}%",
+        f"  Number of prototypes with >95% near-zero activations: {num_mostly_zero}",
+        f"  Number of prototypes with ~100% near-zero activations: {num_always_zero}\n",
+        "Per-Prototype Details (% near-zero for analyzed prototypes):",
+        # Display details sorted by prototype index for consistency
+        *(f"  Proto {p_idx: <4}: {stats['pct_zero']: >6.2f}% ({stats['num_zero']: >4}/{stats['total']: <4})"
+          for p_idx, stats in sorted(prototype_zero_stats.items()))
+    ]
+    report_lines.append("="*60)
+
+    # --- Save Report ---
+    report_path = os.path.join(output_dir, "zero_activation_summary_report.txt")
+    try:
+        with open(report_path, 'w') as f:
+            f.write("\n".join(report_lines))
+        print(f"Saved zero activation report to: {report_path}")
+    except IOError as e:
+        print(f"Error saving zero activation report to {report_path}: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred while saving the zero report: {e}")
+
+# --- Heatmap Generation Helper ---
+
+def _generate_summary_heatmap(
+    output_dir: str,
+    prototypes_for_heatmap: List[int],
+    all_activations: np.ndarray,
+    all_class_labels: np.ndarray,
+    unique_classes: List[int],
+    class_idx_to_name_func: Callable[[int], str],
+    near_zero_threshold: float
+) -> None:
+    """
+    Generates a heatmap summarizing the average non-zero activation for each
+    prototype-class pair and saves it.
+
+    Args:
+        output_dir: Directory to save the heatmap.
+        prototypes_for_heatmap: Indices of prototypes to include.
+        all_activations: Numpy array of collected activations.
+        all_class_labels: Numpy array of collected class labels.
+        unique_classes: Sorted list of unique class indices.
+        class_idx_to_name_func: Function mapping class indices to names.
+        near_zero_threshold: Threshold defining non-zero activation.
+    """
+    print("\nGenerating summary heatmap...")
+
+    # Check if there are any prototypes left to plot
+    if not prototypes_for_heatmap:
+         print("Warning: No prototypes provided for heatmap generation. Skipping heatmap.")
+         return
+
+    num_heatmap_protos = len(prototypes_for_heatmap)
+    num_heatmap_classes = len(unique_classes)
+
+    # Initialize matrix to store heatmap data (average non-zero activation)
+    z_data = np.zeros((num_heatmap_classes, num_heatmap_protos))
+
+# Inside _generate_summary_heatmap function:
+
+    # Populate the heatmap data matrix
     for i, cls in enumerate(unique_classes):
-        for j, p_idx in enumerate(prototypes_to_plot):
-            proto_activations = all_activations[:, p_idx].numpy()
-            class_mask = all_class_labels == cls
-            class_activations = proto_activations[class_mask.numpy()]
-            non_zero_class_activations = class_activations[class_activations > 0.01]
-            
-            # Calculate average activation for non-zero values
-            z_data[i, j] = np.mean(non_zero_class_activations) if len(non_zero_class_activations) > 0 else 0.0
-    
-    # Get class names for y-axis
-    class_labels = [class_idx_to_name(cls) for cls in unique_classes]
-    
-    # Create heatmap visualization
+        # Create a boolean mask for samples belonging to the current class
+        class_mask = (all_class_labels == cls)
+
+        # Skip if this class has no samples in the collected data
+        if not np.any(class_mask):
+            # Ensure the row corresponding to this class is filled with zeros
+            # (or another appropriate default like np.nan if preferred)
+            z_data[i, :] = 0.0
+            continue
+
+        for j, p_idx in enumerate(prototypes_for_heatmap):
+            # Ensure prototype index is valid
+            if p_idx >= all_activations.shape[1]:
+                 print(f"Warning (Heatmap): Skipping prototype index {p_idx} - out of bounds.")
+                 # Assign a default value if skipping
+                 z_data[i, j] = 0.0 # Or np.nan
+                 continue
+
+            # Select activations for the current class and prototype
+            class_proto_activations = all_activations[class_mask, p_idx]
+
+            # *** Calculate average using ALL activations for this class-proto pair ***
+            # Check if there are any activations for this class before averaging
+            if len(class_proto_activations) > 0:
+                z_data[i, j] = float(np.mean(class_proto_activations))
+            else:
+                # Assign 0 if somehow the class mask was non-empty but slicing failed
+                # or if num_class_samples was 0 (already handled by outer check)
+                z_data[i, j] = 0.0
+
+    # --- Prepare Labels for Axes ---
+    class_labels_names = [class_idx_to_name_func(cls) for cls in unique_classes]
+    prototype_labels_names = [f'P{p}' for p in prototypes_for_heatmap] # Short label 'P{index}'
+
+    # --- Create Heatmap Figure with Plotly ---
     summary_fig = go.Figure(data=go.Heatmap(
-        z=z_data,
-        y=class_labels,
-        x=[f'Proto {p}' for p in prototypes_to_plot],
-        colorscale='Viridis',
-        colorbar=dict(title="Avg Activation"),
+        z=z_data,                 # The calculated average activations
+        y=class_labels_names,     # Class names on the y-axis
+        x=prototype_labels_names, # Prototype names on the x-axis
+        colorscale='Viridis',     # Choose a visually distinct colormap
+        colorbar=dict(
+            title="Avg <br>Activation", # Label for the color scale bar
+            len=0.75,                           # Adjust colorbar length
+            thickness=15                        # Adjust colorbar thickness
+            ),
+        zmin=0 # Force the color scale to start at 0
     ))
-    
+
+    # --- Configure Heatmap Layout ---
     summary_fig.update_layout(
-        title="Average Non-Zero Activation by Class and Prototype",
-        width=1000,
-        height=800,
-        template="plotly_white",
+        title="Average Activation by Class and Prototype (Filtered)",
+        # Dynamically adjust plot size based on number of items
+        width=max(800, num_heatmap_protos * 15 + 250),
+        height=max(500, num_heatmap_classes * 15 + 200),
+        template="plotly_white", # Use a clean layout theme
         xaxis_title="Prototype",
         yaxis_title="Class",
-        title_x=0.5,
+        title_x=0.5, # Center the main title
+        xaxis=dict(
+            tickangle=-60,    # Angle x-axis labels if many prototypes
+            automargin=True   # Automatically adjust margin for labels
+            ),
+        yaxis=dict(
+            tickmode='array', # Ensure all class labels are displayed
+            tickvals=list(range(num_heatmap_classes)),
+            ticktext=class_labels_names,
+            automargin=True   # Automatically adjust margin for labels
+            ),
+        margin=dict(l=150, b=100, t=80, r=50) # Define plot margins
     )
-    
-    # Save summary figure
-    summary_fig.write_html(os.path.join(output_dir, "prototype_class_activation_summary.html"))
-    summary_fig.write_image(os.path.join(output_dir, "prototype_class_activation_summary.png"))
-    
-    return prototypes_to_plot
+
+    # --- Save Heatmap ---
+    try:
+        heatmap_path_html = os.path.join(output_dir, "prototype_class_activation_summary_filtered.html")
+        heatmap_path_png = os.path.join(output_dir, "prototype_class_activation_summary_filtered.png")
+        summary_fig.write_html(heatmap_path_html)
+        summary_fig.write_image(heatmap_path_png, scale=2) # Higher resolution PNG
+        print(f"Saved filtered summary heatmap to {heatmap_path_html} and .png")
+    except IOError as e:
+        print(f"Error saving summary heatmap files: {e}")
+    except Exception as e:
+        # Catch other potential Plotly/system errors
+        print(f"An unexpected error occurred while saving the summary heatmap: {e}")
+
+
+# --- Main Visualization Function ---
+
+def plot_prototype_activations_by_class(
+    net: torch.nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    device: torch.device,
+    output_dir: str,
+    only_important_prototypes: bool = True,
+    prototype_importance: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    importance_threshold: float = 1e-1,
+    is_count_pipnet: Optional[bool] = None,
+    max_images: int = 10000,
+    class_idx_to_name_func: Callable[[int], str] = class_idx_to_name,
+    plot_outlier_threshold: float = 100.0,
+    near_zero_threshold: float = 0.01
+) -> List[int]:
+    """
+    Plots class-conditional histograms of prototype activations, showing normalized frequencies.
+
+    Generates histogram plots showing the distribution of activation values (or counts)
+    for selected prototypes, broken down by the ground-truth class of the input image.
+    The y-axis represents the normalized frequency of activations *within that class's
+    non-zero activations* for the specific prototype. It also produces a summary heatmap
+    and a report on near-zero activations. Prototypes with extremely high average
+    activations can be optionally excluded from plotting.
+
+    Args:
+        net: The trained model (PIPNet or CountPIPNet).
+        dataloader: DataLoader for the dataset to analyze (e.g., projectloader).
+        device: Device to run the model on ('cuda' or 'cpu').
+        output_dir: Directory path to save the generated plots and reports.
+        only_important_prototypes: If True, filter prototypes based on importance scores.
+        prototype_importance: 1-D array/tensor of importance scores for each prototype.
+                              Required if `only_important_prototypes` is True.
+        importance_threshold: Minimum importance score for a prototype to be plotted when
+                              `only_important_prototypes` is True.
+        is_count_pipnet: Specifies if the model is CountPIPNet. Auto-detected if None.
+        max_images: Maximum number of images to process from the dataloader.
+        class_idx_to_name_func: Function mapping class indices to readable names.
+        plot_outlier_threshold: Prototypes with avg non-zero activation above this value
+                                will be skipped during plot generation and excluded from
+                                the heatmap. Use `float('inf')` to disable.
+        near_zero_threshold: Activations below this are considered 'near-zero' for reporting.
+
+    Returns:
+        A list of prototype indices initially selected based on importance criteria,
+        before any outlier filtering was applied.
+    """
+    print("\n--- Starting Class-Conditional Activation Histogram Generation ---")
+
+    # --- 1. Initialization and Setup ---
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as e:
+        print(f"Error creating output directory '{output_dir}': {e}")
+        return [] # Cannot proceed
+
+    # Auto-detect model type if not specified
+    if is_count_pipnet is None:
+        is_count_pipnet = hasattr(net.module, '_max_count')
+    model_type_str = 'CountPIPNet' if is_count_pipnet else 'PIPNet'
+    print(f"Model Type: {model_type_str}")
+
+    # Get model configuration
+    try:
+        max_count = net.module._max_count if is_count_pipnet else None
+        num_prototypes = net.module._num_prototypes
+    except AttributeError as e:
+        print(f"Error accessing required model attributes (_max_count or _num_prototypes): {e}")
+        return []
+
+    # --- 2. Initial Prototype Selection (Based on Importance) ---
+    initial_prototypes_to_plot: List[int] = []
+    if only_important_prototypes:
+        # Ensure prototype importance scores are provided and valid
+        if prototype_importance is None:
+            print("Error: `prototype_importance` is required when `only_important_prototypes=True`.")
+            return []
+        try:
+            # Convert importance scores to a numpy array for consistent processing
+            if isinstance(prototype_importance, torch.Tensor):
+                prototype_importance_np = prototype_importance.detach().cpu().numpy()
+            else:
+                prototype_importance_np = np.array(prototype_importance)
+
+            # Select prototype indices exceeding the importance threshold
+            initial_prototypes_to_plot = np.where(prototype_importance_np > importance_threshold)[0].tolist()
+
+            # If no prototypes meet the threshold, select all as a fallback
+            if not initial_prototypes_to_plot:
+                print(f"Warning: No prototypes found with importance > {importance_threshold}. Selecting all initially.")
+                initial_prototypes_to_plot = list(range(num_prototypes))
+        except Exception as e:
+            print(f"Error processing prototype importance scores: {e}")
+            return []
+    else:
+        # If not filtering by importance, select all prototypes
+        initial_prototypes_to_plot = list(range(num_prototypes))
+
+    # Exit if no prototypes are selected for any reason
+    if not initial_prototypes_to_plot:
+        print("Error: No prototypes selected for analysis.")
+        return []
+    print(f"Initially selected {len(initial_prototypes_to_plot)} prototypes based on importance criteria.")
+
+    # --- 3. Data Collection ---
+    # Collect activations and labels using the helper function
+    all_activations, all_class_labels = _collect_activations(
+        net, dataloader, device, is_count_pipnet, max_images, num_prototypes
+    )
+
+    # Exit if data collection failed
+    if all_activations is None or all_class_labels is None:
+        print("Aborting histogram generation due to data collection failure.")
+        return initial_prototypes_to_plot # Return original list
+
+    # --- 4. Calculate Overall Averages and Filter Outlier Prototypes ---
+    print("\nCalculating overall average activations for outlier filtering...")
+    overall_avg_activations: Dict[int, float] = {}
+    for p_idx in initial_prototypes_to_plot:
+        # Check index validity against collected data
+        if p_idx >= all_activations.shape[1]:
+             print(f"Warning (Filtering): Skipping prototype index {p_idx} - out of bounds.")
+             continue
+
+        proto_acts = all_activations[:, p_idx]
+        # Calculate average based only on activations above the near-zero threshold
+        non_zero_acts = proto_acts[proto_acts > near_zero_threshold]
+        overall_avg_activations[p_idx] = float(np.mean(non_zero_acts)) if len(non_zero_acts) > 0 else 0.0
+
+    # Create the final list of prototypes to plot, excluding outliers
+    final_prototypes_to_plot = [
+        p for p in initial_prototypes_to_plot
+        if p in overall_avg_activations and overall_avg_activations[p] <= plot_outlier_threshold
+    ]
+    # Identify which prototypes were skipped
+    skipped_outlier_prototypes = sorted(list(set(initial_prototypes_to_plot) - set(final_prototypes_to_plot)))
+
+    if skipped_outlier_prototypes:
+        print(f"Skipping plots for {len(skipped_outlier_prototypes)} prototypes with avg activation > {plot_outlier_threshold:.1f}: {skipped_outlier_prototypes}")
+        for p in skipped_outlier_prototypes:
+            print(f"  - Prototype {p}: Avg Activation = {overall_avg_activations[p]:.2f}")
+    elif len(initial_prototypes_to_plot) > 0:
+         print(f"No prototypes filtered based on outlier threshold (>{plot_outlier_threshold:.1f}).")
+
+    # --- 5. Generate Near-Zero Activation Report ---
+    # Report based on the final list of prototypes that will be plotted
+    _generate_zero_report(
+        output_dir, final_prototypes_to_plot, initial_prototypes_to_plot,
+        all_activations, near_zero_threshold
+    )
+
+    # If all prototypes were filtered out, skip plotting
+    if not final_prototypes_to_plot:
+         print("\nWarning: All initially selected prototypes were filtered out as outliers. No individual plots or heatmap will be generated.")
+         return initial_prototypes_to_plot # Return the original list
+
+    # --- 6. Generate Individual Prototype Plots ---
+    # Get unique class labels present in the collected data
+    unique_classes = sorted(np.unique(all_class_labels).tolist())
+    if not unique_classes:
+        print("Error: No unique classes found in collected data. Cannot generate plots.")
+        return initial_prototypes_to_plot
+
+    # Define a color palette for distinguishing classes in plots
+    bright_colors = ["#FF4500","#00CED1","#FFD700","#32CD32","#BA55D3","#FF6347","#4169E1","#2E8B57","#FF1493","#1E90FF","#FF8C00","#00FA9A","#9932CC","#00BFFF","#FF69B4"]
+    class_colors = {cls: bright_colors[i % len(bright_colors)] for i, cls in enumerate(unique_classes)}
+
+    print(f"\nGenerating individual plots for {len(final_prototypes_to_plot)} prototypes...")
+    # Loop over the FINAL filtered list of prototypes
+    plot_pbar = tqdm(final_prototypes_to_plot, desc="Generating prototype plots", ncols=100, leave=False)
+    for p in plot_pbar:
+        plot_pbar.set_postfix_str(f"Prototype: {p}")
+
+        # --- 6a. Prepare Data for Prototype p ---
+        # Index validity check
+        if p >= all_activations.shape[1]:
+            print(f"Warning (Plotting): Skipping prototype index {p} - out of bounds.")
+            continue
+
+        proto_activations = all_activations[:, p]
+        fig = go.Figure() # Initialize a new figure for each prototype
+
+        # --- 6b. Define X-axis Range ---
+        if is_count_pipnet:
+            # For discrete counts, ensure the range covers observed max + buffer
+            actual_max = np.max(proto_activations) if len(proto_activations) > 0 else 0.0
+            upper_bound = max(max_count + 1.5 if max_count is not None else 1.5, actual_max + 1.0)
+            x_range = [-0.5, upper_bound] # Start at -0.5 for centered bars
+        else:
+            # For continuous activations, focus on the positive range
+            non_zero_acts_p = proto_activations[proto_activations > near_zero_threshold]
+            upper_bound = np.max(non_zero_acts_p) * 1.1 if len(non_zero_acts_p) > 0 else 1.0
+            # Ensure range includes at least 0.1 for PIPNet threshold visualization
+            x_range = [0.0, max(upper_bound, 0.15)]
+
+        # --- 6c. Calculate Activation Statistics for Annotation ---
+        # Calculate overall non-zero percentage for this prototype
+        non_zero_mask_p = proto_activations >= near_zero_threshold # Use >= for non-zero
+        total_samples_p = len(proto_activations)
+        overall_non_zero_pct_p = (np.sum(non_zero_mask_p) / total_samples_p * 100.0) if total_samples_p > 0 else 0.0
+
+        # Calculate non-zero counts and total samples per class
+        non_zero_counts_per_class: Dict[int, int] = {}
+        total_samples_per_class: Dict[int, int] = {}
+        for cls in unique_classes:
+            class_mask = (all_class_labels == cls)
+            num_class_samples = int(np.sum(class_mask))
+            total_samples_per_class[cls] = num_class_samples
+            if num_class_samples > 0:
+                # Count activations >= threshold within this class
+                non_zero_counts_per_class[cls] = int(np.sum(proto_activations[class_mask] >= near_zero_threshold))
+            else:
+                non_zero_counts_per_class[cls] = 0
+
+        # --- 6d. Determine Class Activity (Frequency) and Sort ---
+        # This determines the plotting order (most active classes on top)
+        class_activity: Dict[int, float] = {}
+        for cls in unique_classes:
+            class_mask = (all_class_labels == cls)
+            num_class_samples = int(np.sum(class_mask))
+            if num_class_samples == 0:
+                class_activity[cls] = 0.0
+                continue
+            # Proportion of non-zero activations within this class
+            non_zero_count = np.sum(proto_activations[class_mask] > near_zero_threshold)
+            class_activity[cls] = non_zero_count / num_class_samples
+        # Sort classes by descending frequency of activation
+        sorted_classes = sorted(class_activity.items(), key=lambda item: item[1], reverse=True)
+
+        # --- 6e. Create Histogram Traces for Each Class ---
+        # The y-axis will represent normalized frequency *within the non-zero activations of that class*
+        class_traces = []
+        for cls, activity in sorted_classes:
+            class_mask = (all_class_labels == cls)
+            # Skip if no samples for this class
+            if not np.any(class_mask):
+                continue
+
+            class_activations = proto_activations[class_mask]
+            # Isolate activations above the near-zero threshold for frequency calculation
+            non_zero_activations = class_activations[class_activations > near_zero_threshold]
+
+            # Skip if this class has no non-zero activations for this prototype
+            if len(non_zero_activations) == 0:
+                continue
+
+            class_name = class_idx_to_name_func(cls)
+            # Visually distinguish the top 3 most frequently activating classes
+            is_top_class = cls in [c for c, _ in sorted_classes[:3]]
+
+            # Calculate histogram data: unique activation values and their counts
+            values, counts = np.unique(non_zero_activations, return_counts=True)
+            # Normalize counts to get frequency *within this class's non-zero activations*
+            normalized_freq = counts / len(non_zero_activations)
+
+            # Determine bar width heuristically
+            bar_width = 0.8 if is_count_pipnet else ((x_range[1] - x_range[0]) / 60)
+
+            # Create the Plotly Bar trace for this class
+            class_traces.append(go.Bar(
+                x=values,                   # Activation values on x-axis
+                y=normalized_freq,          # Normalized frequency on y-axis
+                name=f"{class_name}",       # Class name for the legend
+                marker=dict(
+                    color=class_colors.get(cls, '#cccccc'), # Assign color, fallback to gray
+                    line=dict(width=0)      # No distracting borders on bars
+                ),
+                opacity=0.9 if is_top_class else 0.7, # Adjust opacity for visual hierarchy
+                width=bar_width             # Set bar width
+            ))
+
+        # --- 6f. Add Traces and Annotations to Figure ---
+        # Add traces in reverse order (most active class plotted last/on top)
+        for trace in reversed(class_traces):
+            fig.add_trace(trace)
+
+        # *** MODIFIED: Annotation showing Non-Zero counts per class ***
+        non_zero_text_lines = [f"<b>Non-Zero (>={near_zero_threshold:.2f}) Activations:</b><br>  Overall: {overall_non_zero_pct_p:.1f}%"]
+
+        # Sort classes by the number of non-zero counts for this prototype, descending
+        # Filter out classes with 0 total samples to avoid division errors or meaningless entries
+        valid_classes_for_sort = [cls for cls in unique_classes if total_samples_per_class.get(cls, 0) > 0]
+        sorted_non_zero_counts = sorted(
+            valid_classes_for_sort,
+            key=lambda cls: non_zero_counts_per_class.get(cls, 0),
+            reverse=True
+        )
+
+        # Display details for top classes contributing to non-zero counts
+        for cls in sorted_non_zero_counts:
+            non_zero_count = non_zero_counts_per_class.get(cls, 0)
+            total_count = total_samples_per_class.get(cls, 0)
+            # Show classes with at least one non-zero count
+            if non_zero_count > 0:
+                class_name_nz = class_idx_to_name_func(cls)
+                # Report as: Non-Zero Count / Total Samples for Class
+                non_zero_text_lines.append(f"- {class_name_nz}: {non_zero_count}/{total_count}")
+
+        non_zero_text = "<br>".join(non_zero_text_lines) # Combine lines with HTML line breaks
+
+        # Add the annotation box to the plot
+        fig.add_annotation(
+            x=0.02, y=0.98,           # Position near top-left corner
+            xref="paper", yref="paper", # Use relative paper coordinates
+            text=non_zero_text,       # Formatted text showing non-zero stats
+            showarrow=False,          # No arrow pointing to data
+            bgcolor="rgba(255,255,255,0.85)", # Semi-transparent white background
+            bordercolor="black",      # Black border
+            borderwidth=1,
+            align='left',             # Align text to the left within the box
+            valign='top',             # Align box to the top
+            font=dict(size=10)        # Font size for annotation
+        )
+
+        # Add Vertical Reference Lines
+        if is_count_pipnet and max_count is not None:
+            # Add dotted lines *between* integer count values
+            for count_val in range(1, int(np.ceil(x_range[1]))):
+                 fig.add_vline(x=count_val - 0.5, line=dict(color="darkgrey", width=1, dash="dot"))
+                 # Add text label *at* the integer count position (e.g., "1", "2")
+                 fig.add_annotation(x=count_val, y=1.0, yref='paper', yshift=5, text=str(count_val),
+                                    showarrow=False, font=dict(size=10, color="darkgrey"))
+        else:
+             # For standard PIPNet, add a reference line at a common threshold (e.g., 0.1)
+             line_val = 0.1
+             fig.add_vline(x=line_val, line=dict(color="black", width=1, dash="dash"),
+                           annotation_text=f"{line_val:.1f}", annotation_position="top right")
+
+        # --- 6g. Configure Plot Title ---
+        title_parts = [f"Prototype {p} Activation Distribution"]
+        if is_count_pipnet:
+            title_parts.append("(Counts)")
+
+        # Safely retrieve and format the importance score
+        imp_val_str = "N/A"
+        if 'prototype_importance_np' in locals() and prototype_importance_np is not None:
+             # Check if index 'p' is valid for the importance array
+             if p < len(prototype_importance_np):
+                  imp_val_str = f"{prototype_importance_np[p]:.4f}"
+        title_parts.append(f"(Importance: {imp_val_str})")
+        plot_title = " ".join(title_parts)
+
+        # Add annotation for the class that most frequently activates this prototype
+        if sorted_classes:
+            native_class, native_activity = sorted_classes[0]
+            # Add this annotation only if the activation frequency is somewhat significant
+            if native_activity > 0.01:
+                native_class_name = class_idx_to_name_func(native_class)
+                fig.add_annotation(
+                    x=0.5, y=1.07, # Position slightly above the main plot title
+                    xref="paper", yref="paper",
+                    text=f"Most Frequent Class: <b>{native_class_name}</b> ({native_activity:.1%})", # Highlight name
+                    showarrow=False,
+                    font=dict(size=14, color=class_colors.get(native_class, 'black')), # Use class color
+                )
+
+        # --- 6h. Configure Plot Layout ---
+        fig.update_layout(
+            title=dict(
+                text=plot_title, # Set the main title text
+                x=0.5,           # Center the title
+                y=0.95           # Position title slightly lower
+            ),
+            width=1100, height=650, # Define overall plot dimensions
+            template="plotly_white", # Use a clean background theme
+
+            xaxis_title="Activation Value" if not is_count_pipnet else "Count Value",
+            yaxis_title="Normalized Frequency (within class, non-zero acts.)", # Describe y-axis content
+
+            xaxis=dict(range=x_range), # Apply calculated x-axis range
+
+            yaxis=dict(
+                autorange=True,      # Automatically determine y-axis range based on data
+                showticklabels=True, # Display frequency values on the y-axis
+                title_standoff=10,   # Space between y-axis title and ticks
+                tickformat=".2f"     # Format y-axis tick labels to 2 decimal places
+            ),
+
+            legend_title_text="Class", # Set the title for the legend box
+            barmode='overlay',       # Overlay bars from different classes at the same x-value
+            bargap=0.1,              # Space between bars for different x-values
+            bargroupgap=0.0,         # No space between bars at the same x-value (for overlay)
+
+            legend=dict(
+                itemsizing='constant', # Keep legend marker size consistent
+                font=dict(size=11),    # Adjust legend font size
+                traceorder='reversed', # Match legend order to the plotting order
+                bgcolor='rgba(255,255,255,0.7)' # Semi-transparent background for legend
+            ),
+            margin=dict(t=120, b=80, l=80, r=50) # Adjust plot margins (top, bottom, left, right)
+        )
+
+        # --- 6i. Save Plot to Files ---
+        try:
+            plot_path_html = os.path.join(output_dir, f"prototype_{p}_class_distribution.html")
+            plot_path_png = os.path.join(output_dir, f"prototype_{p}_class_distribution.png")
+            # Save interactive HTML version
+            fig.write_html(plot_path_html)
+            # Save static PNG version at higher resolution
+            fig.write_image(plot_path_png, scale=2)
+        except Exception as e:
+            # Report any errors during file saving
+            print(f"  Error saving plot for prototype {p}: {e}")
+
+    # Close the progress bar for plotting
+    plot_pbar.close()
+    print(f"\nFinished generating individual plots for {len(final_prototypes_to_plot)} prototypes.")
+
+    # --- 7. Generate Summary Heatmap ---
+    # Uses the same filtered list `final_prototypes_to_plot`
+    _generate_summary_heatmap(
+        output_dir, final_prototypes_to_plot, all_activations, all_class_labels,
+        unique_classes, class_idx_to_name_func, near_zero_threshold
+    )
+
+    print("\n--- Class-Conditional Activation Histogram Generation Complete ---")
+
+    # Return the list of prototypes initially selected before outlier filtering,
+    # reflecting the selection based purely on the importance criteria.
+    return initial_prototypes_to_plot
 
 def plot_prototype_activations_histograms(net, dataloader, device, output_dir, 
                                          only_important_prototypes=True, 

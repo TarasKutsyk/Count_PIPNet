@@ -86,7 +86,8 @@ def get_data(args: argparse.Namespace, basepath: Path = Path('./')):
             basepath / 'data/geometric_shapes_no_noise/dataset/train', 
             basepath / 'data/geometric_shapes_no_noise/dataset/train', 
             basepath / 'data/geometric_shapes_no_noise/dataset/test', 
-            args.image_size, args.seed, args.validation_size
+            args.image_size, args.seed, args.validation_size,
+            test_dir_projection = basepath / 'data/geometric_shapes_no_noise_test/dataset/train'
         )
     if args.dataset == 'geometric_shapes_224_gaussian_noise':
         return get_geometric_shapes_with_gaussian_noise(
@@ -107,7 +108,8 @@ def get_data(args: argparse.Namespace, basepath: Path = Path('./')):
     
     raise Exception(f'Could not load data set, data set "{args.dataset}" not found!')
 
-def get_dataloaders(args: argparse.Namespace, device, basepath: Path = Path('./')):
+def get_dataloaders(args: argparse.Namespace, device, basepath: Path = Path('./'), 
+                    test_set_projection_full=False):
     """
     Get data loaders
     """
@@ -203,7 +205,7 @@ def get_dataloaders(args: argparse.Namespace, device, basepath: Path = Path('./'
                                              drop_last=False
                                              )
     test_projectloader = torch.utils.data.DataLoader(testset_projection,
-                                             batch_size=1,
+                                             batch_size=1 if not test_set_projection_full else args.batch_size,
                                              shuffle=False,
                                              pin_memory=cuda,
                                              num_workers=num_workers,
@@ -340,7 +342,8 @@ def get_geometric_shapes(augment:bool, train_dir:str, project_dir: str, test_dir
 
     return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
 
-def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, validation_size:float): 
+def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, 
+                                             validation_size:float, test_dir_projection = None): 
     """
     Get the geometric shapes dataset with appropriate transformations.
     
@@ -404,7 +407,8 @@ def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, projec
         transform1 = transform_no_augment    
         transform2 = transform_no_augment           
 
-    return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
+    return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size,
+                           test_dir_projection=test_dir_projection)
 
 # New function for the MNIST counting dataset
 def get_mnist_counting(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, validation_size:float): 

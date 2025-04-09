@@ -297,9 +297,9 @@ def run_pipnet(args=None):
     if args.epochs_pretrain > 0 and not resume_training:
         checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
 
-    with torch.no_grad():
-        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                               k=10, are_pretraining_prototypes=True, plot_histograms=False, visualize_prototype_maps=False)
+    # with torch.no_grad():
+    #     topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
+    #                            k=10, are_pretraining_prototypes=True, plot_histograms=True, visualize_prototype_maps=False)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase

@@ -289,7 +289,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'onehot':
         # Use one-hot encoder (original approach)
-        intermediate_layer = OneHotEncoder(max_count, use_ste=use_ste, respect_positive_current=True, 
+        intermediate_layer = OneHotEncoder(max_count, use_ste=use_ste, respect_active_grad=False, 
                                            num_prototypes=num_prototypes, device=device)
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'identity':

@@ -180,6 +180,67 @@ def eval_pipnet(net,
 
     return info
 
+def evaluate_model_lightweight(net, loader, device):
+    """
+    Lightweight evaluation function that computes accuracy and confusion matrix.
+    
+    Args:
+        net: The model to evaluate
+        loader: DataLoader for evaluation
+        device: Device to run evaluation on
+        
+    Returns:
+        Dictionary containing accuracy and confusion matrix
+    """
+    import numpy as np
+    import torch.nn.functional as F
+    from sklearn.metrics import confusion_matrix
+    
+    # Make sure the model is in evaluation mode
+    net.eval()
+    
+    # Tracking variables
+    all_preds = []
+    all_labels = []
+    correct = 0
+    total = 0
+    
+    # Disable gradients for evaluation
+    with torch.no_grad():
+        for inputs, targets in tqdm(loader, desc="Evaluating"):
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            # Forward pass
+            _, _, outputs = net(inputs, inference=True)
+            
+            # Get predictions
+            _, predicted = outputs.max(1)
+            
+            # Update statistics
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+            
+            # Store predictions and labels for confusion matrix
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(targets.cpu().numpy())
+    
+    # Calculate accuracy
+    accuracy = correct / total
+    
+    # Calculate confusion matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    
+    # Prepare results
+    results = {
+        'accuracy': accuracy,
+        'confusion_matrix': cm,
+        'num_classes': net.module._num_classes,
+    }
+    
+    print(f"Evaluation completed. Accuracy: {accuracy:.4f}")
+    
+    return results
+
 def acc_from_cm(cm: np.ndarray) -> float:
     """
     Compute the accuracy from the confusion matrix

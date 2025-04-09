@@ -13,6 +13,8 @@ from features.convnext_features import convnext_tiny_26_features
 import torchvision.transforms as transforms
 from PIL import Image
 
+INPUT_SIZE = 192
+
 def compute_effective_receptive_field(model, input_tensor, feature_idx=None):
     """
     Compute and visualize the effective receptive field using gradients.
@@ -73,12 +75,12 @@ def visualize_all_stages(save_dir="receptive_field_viz", stage_configs = [3, 5, 
     
     # Sample image (or use zeros)
     # Using zeros is cleaner for pure receptive field visualization
-    input_tensor = torch.zeros(1, 3, 224, 224)
+    input_tensor = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
     
     # Optionally use a real image for context
     # transform = transforms.Compose([
-    #     transforms.Resize(224),
-    #     transforms.CenterCrop(224),
+    #     transforms.Resize(INPUT_SIZE),
+    #     transforms.CenterCrop(INPUT_SIZE),
     #     transforms.ToTensor(),
     # ])
     # sample_img = Image.open("sample_image.jpg")
@@ -114,8 +116,8 @@ def visualize_all_stages(save_dir="receptive_field_viz", stage_configs = [3, 5, 
         
         # Add grid lines at intervals of 16 pixels
         plt.grid(which='major', color='w', linestyle='-', linewidth=0.5, alpha=0.3)
-        plt.xticks(np.arange(0, 224, 16))
-        plt.yticks(np.arange(0, 224, 16))
+        plt.xticks(np.arange(0, INPUT_SIZE, 16))
+        plt.yticks(np.arange(0, INPUT_SIZE, 16))
         
         # Calculate receptive field size (thresholded)
         threshold = threshold   # 10% of maximum gradient value
@@ -128,8 +130,8 @@ def visualize_all_stages(save_dir="receptive_field_viz", stage_configs = [3, 5, 
         plt.close()
         
         # Also save a zoomed version focusing on the receptive field
-        center = 224 // 2
-        crop_size = min(rf_size * 2, 224)  # Double the RF size but cap at image size
+        center = INPUT_SIZE // 2
+        crop_size = min(rf_size * 2, INPUT_SIZE)  # Double the RF size but cap at image size
         half_crop = crop_size // 2
         
         plt.figure(figsize=(10, 10))
@@ -159,7 +161,7 @@ def visualize_specific_features(num_stages=3, num_features=5, save_dir="feature_
     model.eval()
     
     # Sample input
-    input_tensor = torch.zeros(1, 3, 224, 224)
+    input_tensor = torch.zeros(1, 3, INPUT_SIZE, INPUT_SIZE)
     
     # Check output channels
     with torch.no_grad():
