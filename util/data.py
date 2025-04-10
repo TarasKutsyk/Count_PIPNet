@@ -386,16 +386,15 @@ def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, projec
             x = self.transform(x)
             return x.squeeze(0)  # [1,C,H,W] -> [C,H,W]
     
-    # For geometric shapes, we use lighter augmentation since they're synthetic
     if augment:
-        # First stage of augmentation (size and geometric)
+        # First stage of augmentation (size and geometric) - applied to each of two inputs in the same way
         transform1 = transforms.Compose([
             transforms.Resize(size=(img_size+32, img_size+32)),
             transforms.RandomRotation(10, fill=255),  # Fill with white (255) instead of black (0)
             transforms.RandomResizedCrop(img_size+8, scale=(0.95, 1.))
         ])
         
-        # Second stage of augmentation (color and cropping)
+        # Second stage of augmentation (color and cropping) - apply a different transform to each input
         transform2 = transforms.Compose([
             transforms.ColorJitter(brightness=0.1, contrast=0.1),  # Minor color jitter
             transforms.RandomCrop(size=(img_size, img_size)),

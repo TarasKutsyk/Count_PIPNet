@@ -47,6 +47,22 @@ def eval_pipnet(net,
                         mininterval=5.,
                         ncols=0)
     (xs, ys) = next(iter(test_loader))
+
+    if is_count_pipnet:
+        # Calculate the number of actual prototypes
+        num_raw_prototypes = net.module._num_prototypes
+        
+        prototype_to_class_weigths = [net.module.get_prototype_importance_per_class(i) for i in range(num_raw_prototypes)]
+        prototype_to_class_weigths = torch.stack(prototype_to_class_weigths, dim=0) # [num_raw_prototypes, num_classes]
+
+        assert prototype_to_class_weigths.shape[0] == num_raw_prototypes and \
+                prototype_to_class_weigths.shape[1] == net.module._num_classes
+        
+        # Reorder the axis to match the original classification weights shape
+        classification_weights = einops.rearrange(prototype_to_class_weigths, 'num_prototypes num_classes -> num_classes num_prototypes')
+    else: # Original PIPNet
+        classification_weights = net.module._classification.weight
+
     # Iterate through the test set
     for i, (xs, ys) in test_iter:
         xs, ys = xs.to(device), ys.to(device)
@@ -57,25 +73,13 @@ def eval_pipnet(net,
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
             # Use the model to classify this batch of input data
             _, pooled, out = net(xs, inference=not is_count_pipnet)
-            batch_size = xs.shape[0]
-            num_classes = out.shape[1]
 
             max_out_score, ys_pred = torch.max(out, dim=1)
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)),dim=1),dim=1)
 
             abstained += (max_out_score.shape[0] - torch.count_nonzero(max_out_score))
-
+            
             if is_count_pipnet:
-                # Calculate the number of actual prototypes
-                num_raw_prototypes = net.module._num_prototypes
-                assert num_raw_prototypes == pooled.shape[1]
-                
-                prototype_to_class_weigths = [net.module.get_prototype_importance_per_class(i) for i in range(num_raw_prototypes)]
-                prototype_to_class_weigths = torch.stack(prototype_to_class_weigths, dim=0) # [num_raw_prototypes, num_classes]
-
-                assert prototype_to_class_weigths.shape[0] == num_raw_prototypes and \
-                       prototype_to_class_weigths.shape[1] == net.module._num_classes
-
                 # Compute the weighted prototype activations for each class
                 # First, rearrange to match the expected shape for broadcasting with pooled
                 repeated_weight = einops.repeat(prototype_to_class_weigths, 
@@ -142,7 +146,7 @@ def eval_pipnet(net,
         del ys_pred
         
     print("PIP-Net abstained from a decision for", abstained.item(), "images", flush=True)            
-    info['num non-zero prototypes'] = torch.gt(net.module._classification.weight,1e-3).any(dim=0).sum().item()
+    info['num non-zero prototypes'] = torch.gt(classification_weights, 1e-3).any(dim=0).sum().item()
     print("sparsity ratio: ", (torch.numel(net.module._classification.weight)-torch.count_nonzero(torch.nn.functional.relu(net.module._classification.weight-1e-3)).item()) / torch.numel(net.module._classification.weight), flush=True)
     info['confusion_matrix'] = cm
     info['test_accuracy'] = acc_from_cm(cm)
@@ -296,22 +300,20 @@ def compute_local_explanation_sizes(
 
     # -------------------------------------------------------------------------
     # (B) PREDICTED-CLASS EXPLANATION SIZE
-    #   For each image i, we only look at the row = ys_pred[i] in relevant,
-    #   then count active prototypes.
-    # -------------------------------------------------------------------------
-    #   Approach:
-    #   1) Sum across prototypes -> shape [num_classes, batch_size]
-    #   2) index_select the correct class for each image -> shape [batch_size, batch_size]
-    #   3) take the diagonal -> shape [batch_size]
-    #
+    #   For each image i, we only look at the row corresponding to the true class 
+    #   in `relevant`, then count active prototypes.
+
     #   That yields "per-image, how many prototypes are active for the predicted class?"
     # -------------------------------------------------------------------------
 
-    #   local_count_per_class: [num_classes, batch_size]
-    local_count_per_class = relevant.sum(dim=2).float()
-    #   pick the row for each predicted class
-    #   => shape [batch_size, batch_size], then diagonal => [batch_size]
+    local_count_per_class = relevant.sum(dim=2).float() # [num_classes, batch_size]
+    # this gives how many active prototypes each class has for each image
+
     selected_local_count = torch.index_select(local_count_per_class, dim=0, index=ys_pred)
+    # selected_local_count: [batch_size, batch_size]- each row (batch) contains 
+    # the number of active prototypes for the predicted class for every other batch
+
+    # But we're interested only in the current batch, so we take the diagonal
     pred_class_sizes = torch.diagonal(selected_local_count, offset=0)
 
     return any_class_sizes.float(), pred_class_sizes.float()

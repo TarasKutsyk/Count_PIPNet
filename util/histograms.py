@@ -385,7 +385,9 @@ def plot_prototype_activations_by_class(
     max_images: int = 10000,
     class_idx_to_name_func: Callable[[int], str] = class_idx_to_name,
     plot_outlier_threshold: float = 100.0,
-    near_zero_threshold: float = 0.01
+    near_zero_threshold: float = 0.01,
+    plot_always_histograms: bool = False,
+    num_bins_continuous: int = 50
 ) -> List[int]:
     """
     Plots class-conditional histograms of prototype activations, showing normalized frequencies.
@@ -622,25 +624,45 @@ def plot_prototype_activations_by_class(
             # Visually distinguish the top 3 most frequently activating classes
             is_top_class = cls in [c for c, _ in sorted_classes[:3]]
 
-            # Calculate histogram data: unique activation values and their counts
-            values, counts = np.unique(non_zero_activations, return_counts=True)
-            # Normalize counts to get frequency *within this class's non-zero activations*
-            normalized_freq = counts / len(non_zero_activations)
+            if is_count_pipnet and not plot_always_histograms:
+                # --- Logic for Discrete Counts (CountPIPNet) ---
+                values, counts = np.unique(non_zero_activations, return_counts=True)
+                # Normalize frequency within this class's non-zero activations
+                normalized_freq = counts / len(non_zero_activations)
+                # X-values are the unique count values converted to strings for categorical axis
+                x_values_for_plot = [str(v) for v in values]
+                # Bar width is less relevant for categorical, let Plotly handle
+                bar_width = None
+            else:
+                # --- Logic for Continuous Activations (PIPNet) ---
+                # Define histogram range slightly wider than [0, 1] to catch edges if needed
+                # Clip max range to avoid issues if activations slightly exceed 1 due to float precision
+                hist_max_val = max(1.0, np.max(non_zero_activations) if len(non_zero_activations) > 0 else 1.0)
+                hist_range = (near_zero_threshold, hist_max_val * 1.01) # Add small buffer at max
 
-            # Determine bar width heuristically
-            bar_width = 0.8 if is_count_pipnet else ((x_range[1] - x_range[0]) / 60)
+                # Calculate histogram counts and bin edges
+                counts, bin_edges = np.histogram(
+                    non_zero_activations,
+                    bins=num_bins_continuous,
+                    range=hist_range
+                )
+                # Normalize counts to get frequency
+                normalized_freq = counts / len(non_zero_activations)
+                # Calculate bin centers for plotting bar positions
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+                # Calculate bin width for consistent bar appearance
+                bar_width = bin_edges[1] - bin_edges[0]
+                # X-values are the bin centers
+                x_values_for_plot = bin_centers
 
-            # Create the Plotly Bar trace for this class
+            # Create the Plotly Bar trace using calculated x, y, and width
             class_traces.append(go.Bar(
-                x=values,                   # Activation values on x-axis
-                y=normalized_freq,          # Normalized frequency on y-axis
-                name=f"{class_name}",       # Class name for the legend
-                marker=dict(
-                    color=class_colors.get(cls, '#cccccc'), # Assign color, fallback to gray
-                    line=dict(width=0)      # No distracting borders on bars
-                ),
-                opacity=0.9 if is_top_class else 0.7, # Adjust opacity for visual hierarchy
-                width=bar_width             # Set bar width
+                x=x_values_for_plot,        # Use calculated bin centers or unique counts
+                y=normalized_freq,          # Use calculated normalized frequency
+                name=f"{class_name}",
+                marker=dict(color=class_colors.get(cls, '#cccccc'), line=dict(width=0)),
+                opacity=0.9 if is_top_class else 0.7,
+                width=bar_width             # Use calculated bin width for continuous case
             ))
 
         # --- 6f. Add Traces and Annotations to Figure ---

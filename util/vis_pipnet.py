@@ -26,7 +26,8 @@ def net_forward(xs, net, is_count_pipnet=True):
 def visualize_topk(net, projectloader, num_classes, device, foldername, 
                   args: argparse.Namespace, k=10, verbose=True, 
                   are_pretraining_prototypes=False, plot_histograms=True, histogram_type='per-class', # 'per-class', 'standard'
-                  visualize_prototype_maps=True, max_feature_maps_per_prototype=3):
+                  visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
+                  plot_always_histograms=False):
     """
     Wrapper function for prototype visualization that delegates to the appropriate implementation
     based on the model type (CountPIPNet vs regular PIPNet).
@@ -38,13 +39,15 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
         return visualize_topk_count_pipnet(
             net, projectloader, num_classes, device, foldername, 
             args, k, verbose, are_pretraining_prototypes, plot_histograms,
-            visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type
+            visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type,
+            plot_always_histograms=plot_always_histograms
         )
     else:
         return visualize_topk_pipnet(
             net, projectloader, num_classes, device, foldername, 
             args, k, verbose, are_pretraining_prototypes, plot_histograms,
-            visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type
+            visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type,
+            plot_always_histograms=plot_always_histograms
         )
 
 @torch.no_grad()
@@ -52,7 +55,7 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
                           args: argparse.Namespace, k=10, verbose=True, 
                           are_pretraining_prototypes=False, plot_histograms=True,
                           visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
-                          histogram_type='standard'):
+                          histogram_type='standard', plot_always_histograms=True):
     """
     Original visualization function for standard PIPNet models.
     This version uses the single-pass approach to avoid inconsistencies.
@@ -101,6 +104,7 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
                 prototype_importance=prototype_importance,
                 importance_threshold=1e-3,  # Use a threshold for per-class histograms
                 is_count_pipnet=False,
+                plot_always_histograms=plot_always_histograms
             )
         else:
             plot_prototype_activations_histograms(
@@ -441,7 +445,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
                                args: argparse.Namespace, k=10, verbose=True, 
                                are_pretraining_prototypes=False, plot_histograms=True,
                                visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
-                               histogram_type='per-class'):
+                               histogram_type='per-class', plot_always_histograms=False):
     """
     Visualization function specially designed for CountPIPNet models.
     This version uses class information to select examples with different counts
@@ -550,6 +554,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
                 prototype_importance=prototype_importance,
                 importance_threshold=1e-1,
                 is_count_pipnet=True,
+                plot_always_histograms=plot_always_histograms
             )
         else:
             plot_prototype_activations_histograms(

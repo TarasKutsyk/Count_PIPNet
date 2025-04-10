@@ -122,10 +122,6 @@ class CountPIPNet(nn.Module):
         # Get the absolute weights to avoid cancellation effects
         classifier_input_weights = torch.abs(classifier_input_weights)
 
-        # if prototype_idx == 0:
-        #     print(f'classifier_input_weights shape: {classifier_input_weights.shape}')
-        #     print(f'classifier_input_weights:\n{classifier_input_weights}')
-
         # Now compute the per-class importance for a given prototype by taking a dot product
         # between the classifier_input_weights and the classifier weights themselves for each class
         prototype_importance_per_class = einops.einsum(classifier_input_weights, self._classification.weight,

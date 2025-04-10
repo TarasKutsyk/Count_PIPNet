@@ -204,9 +204,6 @@ def run_all_configs(cmd_args):
     # Track results for summary
     results = []
     
-    # Handle shared pretraining if requested and not using fresh pretraining
-    shared_pretrained_dir = cmd_args.shared_pretrained_dir
-
     # Dictionary to store paths to already completed pretraining checkpoints
     # Key: tuple(seed, num_stages, num_features), Value: path to 'net_pretrained'
     pretrained_checkpoints = {}
@@ -246,24 +243,34 @@ def run_all_configs(cmd_args):
                 gpu_ids=cmd_args.gpu_ids
             )
 
-            if cmd_args.fresh_pretraining:
-                # Force fresh pretraining for this run, ignore shared logic
-                run_args.shared_pretrained_dir = ''
-                # Override pretraining epochs if specified (optional, keep if needed)
+            # Priority 1: Explicitly provided shared directory
+            if cmd_args.shared_pretrained_dir:
+                run_args.shared_pretrained_dir = cmd_args.shared_pretrained_dir
+                run_args.epochs_pretrain = 0  # Don't pretrain if loading explicit path
+                print(f"INFO: Using explicitly provided shared pretrain model: {run_args.shared_pretrained_dir}")
+                current_run_shared_pretrained_dir = run_args.shared_pretrained_dir
+                perform_pretraining_this_run = False
+
+            # Priority 2: Fresh pretraining requested (only if no explicit path was given)
+            elif cmd_args.fresh_pretraining:
+                run_args.shared_pretrained_dir = '' # Ensure no loading
+                # Override pretraining epochs if specified (optional)
                 if cmd_args.individual_pretraining_epochs is not None:
                     run_args.epochs_pretrain = cmd_args.individual_pretraining_epochs
                 print(f"INFO: Fresh pretraining requested. Performing pretraining (if epochs > 0) for this run.")
                 perform_pretraining_this_run = run_args.epochs_pretrain > 0
 
+            # Priority 3: Key-based shared pretraining (only if no explicit path and no fresh pretraining)
             elif pretrain_key in pretrained_checkpoints:
                 # Found an existing checkpoint for this key
                 run_args.shared_pretrained_dir = pretrained_checkpoints[pretrain_key]
                 run_args.epochs_pretrain = 0 # Don't pretrain again
                 print(f"INFO: Found shared pretrain checkpoint for key {pretrain_key}. Loading from: {run_args.shared_pretrained_dir}")
-                current_run_shared_pretrained_dir = run_args.shared_pretrained_dir # Store for potential use later if needed
+                current_run_shared_pretrained_dir = run_args.shared_pretrained_dir
+                perform_pretraining_this_run = False
 
+            # Priority 4: Perform pretraining for this key (no explicit path, no fresh pretraining, no existing key)
             else:
-                # No checkpoint found for this key, this run will do the pretraining (if epochs > 0)
                 run_args.shared_pretrained_dir = '' # Ensure it doesn't load anything accidentally
                 print(f"INFO: No shared pretrain checkpoint found for key {pretrain_key}. Performing pretraining (if epochs > 0) in run: {run_args.log_dir}")
                 perform_pretraining_this_run = run_args.epochs_pretrain > 0
