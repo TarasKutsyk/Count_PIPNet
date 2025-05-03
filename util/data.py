@@ -342,6 +342,18 @@ def get_geometric_shapes(augment:bool, train_dir:str, project_dir: str, test_dir
 
     return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
 
+# Wrap Kornia transform to handle dimensions correctly
+class KorniaWrapper(torch.nn.Module):
+    def __init__(self, transform):
+        super().__init__()
+        self.transform = transform
+        
+    def forward(self, x):
+        # Add batch dimension, apply transform, then remove batch dimension
+        x = x.unsqueeze(0)  # [C,H,W] -> [1,C,H,W]
+        x = self.transform(x)
+        return x.squeeze(0)  # [1,C,H,W] -> [C,H,W]
+
 def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, 
                                              validation_size:float, test_dir_projection = None): 
     """
@@ -373,18 +385,6 @@ def get_geometric_shapes_with_gaussian_noise(augment:bool, train_dir:str, projec
         transforms.ToTensor(),
         normalize
     ])
-
-    # Wrap Kornia transform to handle dimensions correctly
-    class KorniaWrapper(torch.nn.Module):
-        def __init__(self, transform):
-            super().__init__()
-            self.transform = transform
-            
-        def forward(self, x):
-            # Add batch dimension, apply transform, then remove batch dimension
-            x = x.unsqueeze(0)  # [C,H,W] -> [1,C,H,W]
-            x = self.transform(x)
-            return x.squeeze(0)  # [1,C,H,W] -> [C,H,W]
     
     if augment:
         # First stage of augmentation (size and geometric) - applied to each of two inputs in the same way

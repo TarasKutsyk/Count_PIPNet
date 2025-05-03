@@ -3,6 +3,7 @@ visualizations/
 runs/
 configs/
 evaluations/
+augmentation_viz/
 
 # Mac OS-specific storage files
 .DS_Store
