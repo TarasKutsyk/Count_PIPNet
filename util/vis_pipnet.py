@@ -64,6 +64,7 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
     from PIL import Image, ImageDraw as D
     
     print("Visualizing prototypes for topk (PIPNet)...", flush=True)
+    print(f'Using histogram type: {histogram_type}')
     dir = os.path.join(args.log_dir, foldername)
     if not os.path.exists(dir):
         os.makedirs(dir)
@@ -94,7 +95,6 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
         only_important_prototypes = not are_pretraining_prototypes
         
         if histogram_type == 'per-class':
-            # Plot per-class histograms for PIPNet
             plot_prototype_activations_by_class(
                 net=net,
                 dataloader=projectloader,
