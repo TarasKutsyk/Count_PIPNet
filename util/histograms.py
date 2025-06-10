@@ -7,6 +7,7 @@ import torch
 import torch.utils.data
 from tqdm import tqdm
 from typing import List, Dict, Tuple, Optional, Callable, Union
+from plotly.io import write_image
 
 # --- Default Helper Functions (Can be replaced by user's implementations) ---
 
@@ -253,8 +254,7 @@ def _generate_summary_heatmap(
     all_activations: np.ndarray,
     all_class_labels: np.ndarray,
     unique_classes: List[int],
-    class_idx_to_name_func: Callable[[int], str],
-    near_zero_threshold: float
+    class_idx_to_name_func: Callable[[int], str]
 ) -> None:
     """
     Generates a heatmap summarizing the average non-zero activation for each
@@ -281,8 +281,6 @@ def _generate_summary_heatmap(
 
     # Initialize matrix to store heatmap data (average non-zero activation)
     z_data = np.zeros((num_heatmap_classes, num_heatmap_protos))
-
-# Inside _generate_summary_heatmap function:
 
     # Populate the heatmap data matrix
     for i, cls in enumerate(unique_classes):
@@ -360,10 +358,10 @@ def _generate_summary_heatmap(
     # --- Save Heatmap ---
     try:
         heatmap_path_html = os.path.join(output_dir, "prototype_class_activation_summary_filtered.html")
-        heatmap_path_png = os.path.join(output_dir, "prototype_class_activation_summary_filtered.png")
+        heatmap_path_png = os.path.join(output_dir, "prototype_class_activation_summary_filtered.pdf")
         summary_fig.write_html(heatmap_path_html)
-        summary_fig.write_image(heatmap_path_png, scale=2) # Higher resolution PNG
-        print(f"Saved filtered summary heatmap to {heatmap_path_html} and .png")
+        write_image(summary_fig, heatmap_path_png, scale=2, engine="orca") # Higher resolution PNG
+        print(f"Saved filtered summary heatmap to {heatmap_path_html} and .pdf")
     except IOError as e:
         print(f"Error saving summary heatmap files: {e}")
     except Exception as e:
@@ -387,15 +385,21 @@ def plot_prototype_activations_by_class(
     plot_outlier_threshold: float = 100.0,
     near_zero_threshold: float = 0.01,
     plot_always_histograms: bool = False,
-    num_bins_continuous: int = 50
+    num_bins_continuous: int = 50,
+    normalize_frequencies: bool = True,
 ) -> List[int]:
     """
-    Plots class-conditional histograms of prototype activations, showing normalized frequencies.
+    Plots class-conditional histograms of prototype activations.
 
     Generates histogram plots showing the distribution of activation values (or counts)
     for selected prototypes, broken down by the ground-truth class of the input image.
-    The y-axis represents the normalized frequency of activations *within that class's
-    non-zero activations* for the specific prototype. It also produces a summary heatmap
+
+    The y-axis represents either (depending on normalize_frequencies): 
+        - normalize_frequencies=True: the normalized frequency of activations *within that class's
+    non-zero activations* for the specific prototype.
+        - normalize_frequencies=False: the raw count of activations for that class and prototype.
+     
+       It also produces a summary heatmap
     and a report on near-zero activations. Prototypes with extremely high average
     activations can be optionally excluded from plotting.
 
@@ -604,7 +608,6 @@ def plot_prototype_activations_by_class(
         sorted_classes = sorted(class_activity.items(), key=lambda item: item[1], reverse=True)
 
         # --- 6e. Create Histogram Traces for Each Class ---
-        # The y-axis will represent normalized frequency *within the non-zero activations of that class*
         class_traces = []
         for cls, activity in sorted_classes:
             class_mask = (all_class_labels == cls)
@@ -655,10 +658,12 @@ def plot_prototype_activations_by_class(
                 # X-values are the bin centers
                 x_values_for_plot = bin_centers
 
+            y_values_for_plot = normalized_freq if normalize_frequencies else counts
+
             # Create the Plotly Bar trace using calculated x, y, and width
             class_traces.append(go.Bar(
                 x=x_values_for_plot,        # Use calculated bin centers or unique counts
-                y=normalized_freq,          # Use calculated normalized frequency
+                y=y_values_for_plot,        # Use either normalized frequency or counts
                 name=f"{class_name}",
                 marker=dict(color=class_colors.get(cls, '#cccccc'), line=dict(width=0)),
                 opacity=0.9 if is_top_class else 0.7,
@@ -705,7 +710,7 @@ def plot_prototype_activations_by_class(
             borderwidth=1,
             align='left',             # Align text to the left within the box
             valign='top',             # Align box to the top
-            font=dict(size=10)        # Font size for annotation
+            font=dict(size=19)        # Font size for annotation
         )
 
         # Add Vertical Reference Lines
@@ -736,24 +741,24 @@ def plot_prototype_activations_by_class(
         title_parts.append(f"(Importance: {imp_val_str})")
         plot_title = " ".join(title_parts)
 
-        # Add annotation for the class that most frequently activates this prototype
-        if sorted_classes:
-            native_class, native_activity = sorted_classes[0]
-            # Add this annotation only if the activation frequency is somewhat significant
-            if native_activity > 0.01:
-                native_class_name = class_idx_to_name_func(native_class)
-                fig.add_annotation(
-                    x=0.5, y=1.07, # Position slightly above the main plot title
-                    xref="paper", yref="paper",
-                    text=f"Most Frequent Class: <b>{native_class_name}</b> ({native_activity:.1%})", # Highlight name
-                    showarrow=False,
-                    font=dict(size=14, color=class_colors.get(native_class, 'black')), # Use class color
-                )
+        # Optionally, annotation for the class that most frequently activates this prototype
+        # if sorted_classes:
+        #     native_class, native_activity = sorted_classes[0]
+        #     # Add this annotation only if the activation frequency is somewhat significant
+        #     if native_activity > 0.01:
+        #         native_class_name = class_idx_to_name_func(native_class)
+        #         fig.add_annotation(
+        #             x=0.5, y=1.07, # Position slightly above the main plot title
+        #             xref="paper", yref="paper",
+        #             text=f"Most Frequent Class: <b>{native_class_name}</b> ({native_activity:.1%})", # Highlight name
+        #             showarrow=False,
+        #             font=dict(size=18, color=class_colors.get(native_class, 'black')), # Use class color
+        #         )
 
         # --- 6h. Configure Plot Layout ---
         fig.update_layout(
             title=dict(
-                text=plot_title, # Set the main title text
+                # text=plot_title, # Set the main title text
                 x=0.5,           # Center the title
                 y=0.95           # Position title slightly lower
             ),
@@ -761,7 +766,7 @@ def plot_prototype_activations_by_class(
             template="plotly_white", # Use a clean background theme
 
             xaxis_title="Activation Value" if not is_count_pipnet else "Count Value",
-            yaxis_title="Normalized Frequency (within class, non-zero acts.)", # Describe y-axis content
+            yaxis_title="Normalized Frequency" if normalize_frequencies else 'Count', # Describe y-axis content
 
             xaxis=dict(range=x_range), # Apply calculated x-axis range
 
@@ -779,7 +784,7 @@ def plot_prototype_activations_by_class(
 
             legend=dict(
                 itemsizing='constant', # Keep legend marker size consistent
-                font=dict(size=11),    # Adjust legend font size
+                font=dict(size=19),    # Adjust legend font size
                 traceorder='reversed', # Match legend order to the plotting order
                 bgcolor='rgba(255,255,255,0.7)' # Semi-transparent background for legend
             ),
@@ -789,11 +794,14 @@ def plot_prototype_activations_by_class(
         # --- 6i. Save Plot to Files ---
         try:
             plot_path_html = os.path.join(output_dir, f"prototype_{p}_class_distribution.html")
-            plot_path_png = os.path.join(output_dir, f"prototype_{p}_class_distribution.png")
             # Save interactive HTML version
             fig.write_html(plot_path_html)
             # Save static PNG version at higher resolution
-            fig.write_image(plot_path_png, scale=2)
+
+            plot_path_pdf = os.path.join(output_dir, f"prototype_{p}_class_distribution.pdf")
+            plot_path_png = os.path.join(output_dir, f"prototype_{p}_class_distribution.png")
+            write_image(fig, plot_path_pdf, scale=2, engine="orca")
+            write_image(fig, plot_path_png, scale=2, engine="orca")
         except Exception as e:
             # Report any errors during file saving
             print(f"  Error saving plot for prototype {p}: {e}")
@@ -806,7 +814,7 @@ def plot_prototype_activations_by_class(
     # Uses the same filtered list `final_prototypes_to_plot`
     _generate_summary_heatmap(
         output_dir, final_prototypes_to_plot, all_activations, all_class_labels,
-        unique_classes, class_idx_to_name_func, near_zero_threshold
+        unique_classes, class_idx_to_name_func
     )
 
     print("\n--- Class-Conditional Activation Histogram Generation Complete ---")
@@ -1021,7 +1029,7 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
         
         # Save figure
         fig.write_html(os.path.join(output_dir, f"prototype_{p}_histogram.html"))
-        fig.write_image(os.path.join(output_dir, f"prototype_{p}_histogram.png"))
+        write_image(fig, os.path.join(output_dir, f"prototype_{p}_histogram.pdf"), engine="orca")
     
     # Create summary plot with all prototypes
     fig = go.Figure()
@@ -1082,7 +1090,7 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
     
     # Save summary figure
     fig.write_html(os.path.join(output_dir, "all_prototypes_histograms.html"))
-    fig.write_image(os.path.join(output_dir, "all_prototypes_histograms.png"))
+    write_image(fig, os.path.join(output_dir, "all_prototypes_histograms.pdf"), engine="orca")
     
     return prototypes_to_plot
 

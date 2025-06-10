@@ -1,3 +1,4 @@
+from typing import Optional
 from tqdm import tqdm
 import argparse
 import torch
@@ -10,6 +11,8 @@ import torchvision.transforms as transforms
 import torchvision
 from util.func import get_patch_size
 from util.histograms import plot_prototype_activations_histograms, plot_prototype_activations_by_class
+from util.enums import prototype_labels as enums_prototype_labels
+
 import random
 
 def net_forward(xs, net, is_count_pipnet=True):
@@ -27,7 +30,8 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
                   args: argparse.Namespace, k=10, verbose=True, 
                   are_pretraining_prototypes=False, plot_histograms=True, histogram_type='per-class', # 'per-class', 'standard'
                   visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
-                  plot_always_histograms=False):
+                  plot_always_histograms=False, normalize_frequencies=True,
+                  prototype_labels: Optional[str] = None):
     """
     Wrapper function for prototype visualization that delegates to the appropriate implementation
     based on the model type (CountPIPNet vs regular PIPNet).
@@ -40,14 +44,16 @@ def visualize_topk(net, projectloader, num_classes, device, foldername,
             net, projectloader, num_classes, device, foldername, 
             args, k, verbose, are_pretraining_prototypes, plot_histograms,
             visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type,
-            plot_always_histograms=plot_always_histograms
+            plot_always_histograms=plot_always_histograms, normalize_frequencies=normalize_frequencies,
+            # prototype_labels=prototype_labels
         )
     else:
         return visualize_topk_pipnet(
             net, projectloader, num_classes, device, foldername, 
             args, k, verbose, are_pretraining_prototypes, plot_histograms,
             visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type,
-            plot_always_histograms=plot_always_histograms
+            plot_always_histograms=plot_always_histograms, normalize_frequencies=normalize_frequencies,
+            prototype_labels=prototype_labels
         )
 
 @torch.no_grad()
@@ -55,13 +61,27 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
                           args: argparse.Namespace, k=10, verbose=True, 
                           are_pretraining_prototypes=False, plot_histograms=True,
                           visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
-                          histogram_type='standard', plot_always_histograms=True):
+                          histogram_type='standard', plot_always_histograms=True,
+                          normalize_frequencies=True, prototype_labels: Optional[str] = None):
     """
     Original visualization function for standard PIPNet models.
     This version uses the single-pass approach to avoid inconsistencies.
     """
     # Required imports for visualization
     from PIL import Image, ImageDraw as D
+
+    # Load custom prototype labels if specified
+    custom_labels = {}
+    if prototype_labels:
+        try:
+            if prototype_labels in enums_prototype_labels:
+                label_list = enums_prototype_labels[prototype_labels]
+                custom_labels = {item['prototype']: item['label'] for item in label_list}
+                print(f"Successfully loaded {len(custom_labels)} custom prototype labels for '{prototype_labels}'.")
+            else:
+                print(f"Warning: Label key '{prototype_labels}' not found in enums.py. Using default labels.")
+        except Exception as e:
+            print(f"Warning: An error occurred while loading custom labels: {e}. Using default labels.")
     
     print("Visualizing prototypes for topk (PIPNet)...", flush=True)
     print(f'Using histogram type: {histogram_type}')
@@ -104,7 +124,8 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
                 prototype_importance=prototype_importance,
                 importance_threshold=1e-3,  # Use a threshold for per-class histograms
                 is_count_pipnet=False,
-                plot_always_histograms=plot_always_histograms
+                plot_always_histograms=plot_always_histograms,
+                normalize_frequencies=normalize_frequencies
             )
         else:
             plot_prototype_activations_histograms(
@@ -270,30 +291,47 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
             saved[p] += 1
             tensors_per_prototype[p].append(img_data['patch_tensor'])
         
-        # Add text next to each topk-grid
+        # Create and save the grid for this prototype
         if len(images) > 0:
-            img_data = images[0]  # Use first image to get patch size
-            patch_shape = img_data['patch_tensor'].shape
-            
-            text = "P " + str(p)
-            txtimage = Image.new("RGB", (patch_shape[1], patch_shape[2]), (0, 0, 0))
-            draw = D.Draw(txtimage)
-            draw.text((patch_shape[1]//2, patch_shape[2]//2), text, anchor='mm', fill="white")
-            txttensor = transforms.ToTensor()(txtimage)
-            tensors_per_prototype[p].append(txttensor)
-            
-            # Save top-k image patches in grid
             try:
-                grid = torchvision.utils.make_grid(tensors_per_prototype[p], nrow=k+1, padding=1)
-                torchvision.utils.save_image(grid, os.path.join(dir, f"grid_topk_{p}.png"))
-                if saved[p] >= k:
-                    all_tensors.extend(tensors_per_prototype[p])
+                # First, create the grid of just the image patches
+                patch_tensors = tensors_per_prototype[p]
+                patch_grid = torchvision.utils.make_grid(patch_tensors, nrow=k, padding=1, pad_value=40/255.)
+                
+                # Crop the top and bottom padding to avoid thick borders
+                patch_grid = patch_grid[:, 1:-1, :]
+                
+                # Convert the patch grid tensor to a PIL Image
+                patch_grid_pil = transforms.ToPILImage()(patch_grid)
+
+                # Second, create a separate, wider PIL Image for the label
+                patch_shape = patch_tensors[0].shape
+                label_img_width = int(patch_shape[2] * 2.5)  # Make label image 2.5 the width of a patch
+                text = custom_labels.get(p, f"P {p}")
+                
+                # The label image should have the same height as the patch grid
+                label_img = Image.new("RGB", (label_img_width, patch_grid_pil.height), (40, 40, 40))
+                draw = D.Draw(label_img)
+                draw.text((label_img_width // 2, patch_grid_pil.height // 2), text, anchor='mm', fill="white")
+
+                # Third, combine the patch grid and the label image side-by-side
+                total_width = patch_grid_pil.width + label_img.width
+                composite_img = Image.new('RGB', (total_width, patch_grid_pil.height))
+                composite_img.paste(patch_grid_pil, (0, 0))
+                composite_img.paste(label_img, (patch_grid_pil.width, 0))
+                
+                # Save the final composite image
+                composite_img.save(os.path.join(dir, f"grid_topk_{p}.png"))
+
+                # For the 'all_tensors' grid, add the composite image tensor, including the label
+                all_tensors.append(transforms.ToTensor()(composite_img))
+
             except Exception as e:
                 print(f"Error creating grid for prototype {p}: {e}")
     
     # Create a grid with all prototypes
     if len(all_tensors) > 0:
-        grid = torchvision.utils.make_grid(all_tensors, nrow=k+1, padding=1)
+        grid = torchvision.utils.make_grid(all_tensors, nrow=1, padding=1, pad_value=40/255.)
         torchvision.utils.save_image(grid, os.path.join(dir, "grid_topk_all.png"))
     else:
         print("Prototypes not visualized. Try to pretrain longer.", flush=True)
@@ -445,7 +483,8 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
                                args: argparse.Namespace, k=10, verbose=True, 
                                are_pretraining_prototypes=False, plot_histograms=True,
                                visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
-                               histogram_type='per-class', plot_always_histograms=False):
+                               histogram_type='per-class', plot_always_histograms=False,
+                               normalize_frequencies=True, prototype_labels: Optional[str] = None):
     """
     Visualization function specially designed for CountPIPNet models.
     This version uses class information to select examples with different counts
@@ -453,6 +492,19 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
     """
     # Required imports for visualization
     from PIL import Image, ImageDraw as D
+
+    # Load custom prototype labels if specified
+    custom_labels = {}
+    if prototype_labels:
+        try:
+            if prototype_labels in enums_prototype_labels:
+                label_list = enums_prototype_labels[prototype_labels]
+                custom_labels = {item['prototype']: item['label'] for item in label_list}
+                print(f"Successfully loaded {len(custom_labels)} custom prototype labels for '{prototype_labels}'.")
+            else:
+                print(f"Warning: Label key '{prototype_labels}' not found in enums.py. Using default labels.")
+        except Exception as e:
+            print(f"Warning: An error occurred while loading custom labels: {e}. Using default labels.")
 
     # Class to count mapping configuration
     # Maps class ranges to their corresponding count values
@@ -554,7 +606,8 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
                 prototype_importance=prototype_importance,
                 importance_threshold=1e-1,
                 is_count_pipnet=True,
-                plot_always_histograms=plot_always_histograms
+                plot_always_histograms=plot_always_histograms,
+                normalize_frequencies=normalize_frequencies
             )
         else:
             plot_prototype_activations_histograms(
@@ -759,31 +812,48 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
             saved[p] += 1
             tensors_per_prototype[p].append(img_data['patch_tensor'])
         
-        # Add text next to each topk-grid
-        if len(uniform_samples) > 0:
-            img_data = uniform_samples[0]  # Use first image to get patch size
-            patch_shape = img_data['patch_tensor'].shape
-            
-            text = "P " + str(p)
-            txtimage = Image.new("RGB", (patch_shape[1], patch_shape[2]), (0, 0, 0))
-            draw = D.Draw(txtimage)
-            draw.text((patch_shape[1]//2, patch_shape[2]//2), text, anchor='mm', fill="white")
-            txttensor = transforms.ToTensor()(txtimage)
-            tensors_per_prototype[p].append(txttensor)
-            
-            # Save top-k image patches in grid
+        # Create and save the grid for this prototype
+        if len(images) > 0:
             try:
-                grid = torchvision.utils.make_grid(tensors_per_prototype[p], nrow=k+1, padding=1)
-                torchvision.utils.save_image(grid, os.path.join(dir, f"grid_topk_{p}.png"))
-                if saved[p] >= k:
-                    all_tensors.extend(tensors_per_prototype[p])
+                # First, create the grid of just the image patches
+                patch_tensors = tensors_per_prototype[p]
+                patch_grid = torchvision.utils.make_grid(patch_tensors, nrow=k, padding=1, pad_value=40/255.)
+                
+                # Crop the top and bottom padding to avoid thick borders
+                patch_grid = patch_grid[:, 1:-1, :]
+                
+                # Convert the patch grid tensor to a PIL Image
+                patch_grid_pil = transforms.ToPILImage()(patch_grid)
+
+                # Second, create a separate, wider PIL Image for the label
+                patch_shape = patch_tensors[0].shape
+                label_img_width = int(patch_shape[2] * 2.5)  # Make label image 2.5 the width of a patch
+                text = custom_labels.get(p, f"P {p}")
+                
+                # The label image should have the same height as the patch grid
+                label_img = Image.new("RGB", (label_img_width, patch_grid_pil.height), (40, 40, 40))
+                draw = D.Draw(label_img)
+                draw.text((label_img_width // 2, patch_grid_pil.height // 2), text, anchor='mm', fill="white")
+
+                # Third, combine the patch grid and the label image side-by-side
+                total_width = patch_grid_pil.width + label_img.width
+                composite_img = Image.new('RGB', (total_width, patch_grid_pil.height))
+                composite_img.paste(patch_grid_pil, (0, 0))
+                composite_img.paste(label_img, (patch_grid_pil.width, 0))
+                
+                # Save the final composite image
+                composite_img.save(os.path.join(dir, f"grid_topk_{p}.png"))
+
+                # For the 'all_tensors' grid, add the composite image tensor, including the label
+                all_tensors.append(transforms.ToTensor()(composite_img))
+
             except Exception as e:
                 print(f"Error creating grid for prototype {p}: {e}")
 
     # Create a grid with all prototypes
     if len(all_tensors) > 0:
         try:
-            grid = torchvision.utils.make_grid(all_tensors, nrow=k+1, padding=1)
+            grid = torchvision.utils.make_grid(all_tensors, nrow=1, padding=1, pad_value=40/255.)
             torchvision.utils.save_image(grid, os.path.join(dir, "grid_topk_all.png"))
         except Exception as e:
             print(f"Error creating combined grid: {e}")
