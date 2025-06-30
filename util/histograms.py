@@ -545,6 +545,9 @@ def plot_prototype_activations_by_class(
     bright_colors = ["#FF4500","#00CED1","#FFD700","#32CD32","#BA55D3","#FF6347","#4169E1","#2E8B57","#FF1493","#1E90FF","#FF8C00","#00FA9A","#9932CC","#00BFFF","#FF69B4"]
     class_colors = {cls: bright_colors[i % len(bright_colors)] for i, cls in enumerate(unique_classes)}
 
+    # Create a structure to store the non-zero counts per prototype and class
+    non_zero_counts_per_prototype_and_class = {}
+
     print(f"\nGenerating individual plots for {len(final_prototypes_to_plot)} prototypes...")
     # Loop over the FINAL filtered list of prototypes
     plot_pbar = tqdm(final_prototypes_to_plot, desc="Generating prototype plots", ncols=100, leave=False)
@@ -678,6 +681,9 @@ def plot_prototype_activations_by_class(
         # *** MODIFIED: Annotation showing Non-Zero counts per class ***
         non_zero_text_lines = [f"<b>Non-Zero (>={near_zero_threshold:.2f}) Activations:</b><br>  Overall: {overall_non_zero_pct_p:.1f}%"]
 
+        # Fill in the non-zero counts per prototype and class for the current prototype
+        non_zero_counts_per_prototype_and_class[p] = non_zero_counts_per_class
+
         # Sort classes by the number of non-zero counts for this prototype, descending
         # Filter out classes with 0 total samples to avoid division errors or meaningless entries
         valid_classes_for_sort = [cls for cls in unique_classes if total_samples_per_class.get(cls, 0) > 0]
@@ -691,6 +697,7 @@ def plot_prototype_activations_by_class(
         for cls in sorted_non_zero_counts:
             non_zero_count = non_zero_counts_per_class.get(cls, 0)
             total_count = total_samples_per_class.get(cls, 0)
+
             # Show classes with at least one non-zero count
             if non_zero_count > 0:
                 class_name_nz = class_idx_to_name_func(cls)
@@ -821,7 +828,7 @@ def plot_prototype_activations_by_class(
 
     # Return the list of prototypes initially selected before outlier filtering,
     # reflecting the selection based purely on the importance criteria.
-    return initial_prototypes_to_plot
+    return non_zero_counts_per_prototype_and_class
 
 def plot_prototype_activations_histograms(net, dataloader, device, output_dir, 
                                          only_important_prototypes=True, 

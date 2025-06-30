@@ -101,21 +101,20 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
     # Determine prototype importance
     prototype_importance = torch.max(classification_weights, dim=0)[0]
 
-    # When visualizing pretraining prototypes, include all prototypes regardless of weights
     if are_pretraining_prototypes:
         # Override prototype_importance with ones so all prototypes pass the threshold check
         prototype_importance = torch.ones_like(prototype_importance)
 
+    nonzero_activation_data = None
     # Plot activation histograms if requested
     if plot_histograms:
         histogram_dir = os.path.join(dir, "activation_histograms")
         os.makedirs(histogram_dir, exist_ok=True)
         
-        # Use same setting for prototype importance as in main function
         only_important_prototypes = not are_pretraining_prototypes
         
         if histogram_type == 'per-class':
-            plot_prototype_activations_by_class(
+            nonzero_activation_data = plot_prototype_activations_by_class(
                 net=net,
                 dataloader=projectloader,
                 device=device,
@@ -476,7 +475,7 @@ def visualize_topk_pipnet(net, projectloader, num_classes, device, foldername,
         if p not in prototypes_not_used:
             topks[p] = [(img_data['index'], img_data['score']) for img_data in images]
     
-    return topks
+    return topks, nonzero_activation_data
 
 @torch.no_grad()
 def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldername, 
@@ -590,6 +589,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
             else:
                 print("Visualizing all prototypes (ignoring classification weights during pretraining)")
 
+    nonzero_activation_data = None
     # Plot activation histograms if requested
     if plot_histograms:
         histogram_dir = os.path.join(dir, "activation_histograms")
@@ -597,7 +597,7 @@ def visualize_topk_count_pipnet(net, projectloader, num_classes, device, foldern
         
         if histogram_type == 'per-class':
             # Plot per-class histograms for CountPIPNet
-            plot_prototype_activations_by_class(
+            nonzero_activation_data = plot_prototype_activations_by_class(
                 net=net,
                 dataloader=projectloader,
                 device=device,
@@ -1012,7 +1012,7 @@ Feature map mean: {feature_map_mean:.3f}
         if p not in prototypes_not_used:
             topks[p] = [(img_data['index'], img_data['model_count']) for img_data in images]
     
-    return topks
+    return topks, nonzero_activation_data
 
 
 def visualize(net, projectloader, num_classes, device, foldername, args: argparse.Namespace):
