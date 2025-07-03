@@ -7,7 +7,7 @@ from util.checkpoint_manager import CheckpointManager
 from pipnet.train import train_pipnet
 from pipnet.test import eval_pipnet
 import torch
-from util.vis_pipnet import visualize, visualize_topk
+from util.vis_pipnet import visualize, vizualize_network
 from util.visualize_prediction import vis_pred, vis_pred_experiments
 from util.selective_loading import load_shared_backbone
 import sys, os
@@ -298,7 +298,7 @@ def run_pipnet(args=None):
         checkpoint_manager.save_pretrained_checkpoint(net, optimizer_net)
 
     with torch.no_grad():
-        topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
+        topks = vizualize_network(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
                                k=10, are_pretraining_prototypes=True, plot_histograms=True, visualize_prototype_maps=False)
         
     # SECOND TRAINING PHASE
@@ -439,7 +439,7 @@ def run_pipnet(args=None):
     if args.epochs > 1:
         checkpoint_manager.save_trained_checkpoint(net, optimizer_net, optimizer_classifier, epoch="last")
         
-    # topks = visualize_topk(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args,
+    # topks = vizualize_network(net, projectloader, len(classes), device, 'visualised_prototypes_topk', args,
     #                        plot_histograms=False, visualize_prototype_maps=False)
 
     # Now load and visualize the best model's prototypes
@@ -449,7 +449,7 @@ def run_pipnet(args=None):
         print(f"Loaded best model from epoch {best_model_info['epoch']} with accuracy {best_model_info['accuracy']:.4f} for visualization", flush=True)
         # Create a dedicated folder for the best model prototypes
         best_model_folder = f'visualised_prototypes_topk_best_model_epoch{best_model_info["epoch"]}'
-        topks_best = visualize_topk(net, projectloader, len(classes), device, best_model_folder, args,
+        topks_best = vizualize_network(net, projectloader, len(classes), device, best_model_folder, args,
                                     plot_histograms=False, visualize_prototype_maps=False)
         print(f"Best model prototypes visualized in folder: {best_model_folder}", flush=True)
     else:

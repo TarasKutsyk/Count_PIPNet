@@ -267,7 +267,6 @@ def _generate_summary_heatmap(
         all_class_labels: Numpy array of collected class labels.
         unique_classes: Sorted list of unique class indices.
         class_idx_to_name_func: Function mapping class indices to names.
-        near_zero_threshold: Threshold defining non-zero activation.
     """
     print("\nGenerating summary heatmap...")
 
@@ -387,6 +386,7 @@ def plot_prototype_activations_by_class(
     plot_always_histograms: bool = False,
     num_bins_continuous: int = 50,
     normalize_frequencies: bool = True,
+    return_type='mean_values'
 ) -> List[int]:
     """
     Plots class-conditional histograms of prototype activations.
@@ -420,6 +420,7 @@ def plot_prototype_activations_by_class(
                                 will be skipped during plot generation and excluded from
                                 the heatmap. Use `float('inf')` to disable.
         near_zero_threshold: Activations below this are considered 'near-zero' for reporting.
+        return_type: 'mean_values', 'non_zero_counts', 'both'.
 
     Returns:
         A list of prototype indices initially selected based on importance criteria,
@@ -545,8 +546,10 @@ def plot_prototype_activations_by_class(
     bright_colors = ["#FF4500","#00CED1","#FFD700","#32CD32","#BA55D3","#FF6347","#4169E1","#2E8B57","#FF1493","#1E90FF","#FF8C00","#00FA9A","#9932CC","#00BFFF","#FF69B4"]
     class_colors = {cls: bright_colors[i % len(bright_colors)] for i, cls in enumerate(unique_classes)}
 
-    # Create a structure to store the non-zero counts per prototype and class
-    non_zero_counts_per_prototype_and_class = {}
+    # Create a structure to store the mean prototype value per class
+    mean_prototype_value_per_class = {}
+    # Similarly, for non-zero counts
+    non_zero_counts_per_class = {}
 
     print(f"\nGenerating individual plots for {len(final_prototypes_to_plot)} prototypes...")
     # Loop over the FINAL filtered list of prototypes
@@ -583,17 +586,21 @@ def plot_prototype_activations_by_class(
         overall_non_zero_pct_p = (np.sum(non_zero_mask_p) / total_samples_p * 100.0) if total_samples_p > 0 else 0.0
 
         # Calculate non-zero counts and total samples per class
-        non_zero_counts_per_class: Dict[int, int] = {}
+        current_non_zero_counts_per_class: Dict[int, int] = {}
         total_samples_per_class: Dict[int, int] = {}
+        current_mean_prototype_value_per_class = []
+
         for cls in unique_classes:
             class_mask = (all_class_labels == cls)
             num_class_samples = int(np.sum(class_mask))
             total_samples_per_class[cls] = num_class_samples
             if num_class_samples > 0:
                 # Count activations >= threshold within this class
-                non_zero_counts_per_class[cls] = int(np.sum(proto_activations[class_mask] >= near_zero_threshold))
+                current_non_zero_counts_per_class[cls] = int(np.sum(proto_activations[class_mask] >= near_zero_threshold))
+                current_mean_prototype_value_per_class.append(np.mean(proto_activations[class_mask]))
             else:
-                non_zero_counts_per_class[cls] = 0
+                current_non_zero_counts_per_class[cls] = 0
+                current_mean_prototype_value_per_class.append(0.0)
 
         # --- 6d. Determine Class Activity (Frequency) and Sort ---
         # This determines the plotting order (most active classes on top)
@@ -681,21 +688,24 @@ def plot_prototype_activations_by_class(
         # *** MODIFIED: Annotation showing Non-Zero counts per class ***
         non_zero_text_lines = [f"<b>Non-Zero (>={near_zero_threshold:.2f}) Activations:</b><br>  Overall: {overall_non_zero_pct_p:.1f}%"]
 
-        # Fill in the non-zero counts per prototype and class for the current prototype
-        non_zero_counts_per_prototype_and_class[p] = non_zero_counts_per_class
+        # Fill in the mean prototype value per class for the current prototype
+        mean_prototype_value_per_class[p] = current_mean_prototype_value_per_class
+
+        # Fill in the non-zero counts per class for the current prototype
+        non_zero_counts_per_class[p] = current_non_zero_counts_per_class
 
         # Sort classes by the number of non-zero counts for this prototype, descending
         # Filter out classes with 0 total samples to avoid division errors or meaningless entries
         valid_classes_for_sort = [cls for cls in unique_classes if total_samples_per_class.get(cls, 0) > 0]
         sorted_non_zero_counts = sorted(
             valid_classes_for_sort,
-            key=lambda cls: non_zero_counts_per_class.get(cls, 0),
+            key=lambda cls: current_non_zero_counts_per_class.get(cls, 0),
             reverse=True
         )
 
         # Display details for top classes contributing to non-zero counts
         for cls in sorted_non_zero_counts:
-            non_zero_count = non_zero_counts_per_class.get(cls, 0)
+            non_zero_count = current_non_zero_counts_per_class.get(cls, 0)
             total_count = total_samples_per_class.get(cls, 0)
 
             # Show classes with at least one non-zero count
@@ -826,9 +836,15 @@ def plot_prototype_activations_by_class(
 
     print("\n--- Class-Conditional Activation Histogram Generation Complete ---")
 
-    # Return the list of prototypes initially selected before outlier filtering,
-    # reflecting the selection based purely on the importance criteria.
-    return non_zero_counts_per_prototype_and_class
+    # Return the relevant data based on the `return_type` parameter
+    if return_type == 'mean_values':
+        return mean_prototype_value_per_class
+    elif return_type == 'non_zero_counts':
+        return non_zero_counts_per_class
+    elif return_type == 'both':
+        return mean_prototype_value_per_class, non_zero_counts_per_class
+    else:
+        raise ValueError(f"Invalid return_type: {return_type}. Must be 'mean_values', 'non_zero_counts', or 'both'.")
 
 def plot_prototype_activations_histograms(net, dataloader, device, output_dir, 
                                          only_important_prototypes=True, 

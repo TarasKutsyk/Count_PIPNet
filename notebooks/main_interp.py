@@ -44,12 +44,12 @@ sys.path.append(str(base_path))
 # In[2]:
 
 
-from util.vis_pipnet import visualize_topk
+from util.vis_pipnet import vizualize_network
 from pipnet.count_pipnet import get_count_network
 from util.checkpoint_manager import CheckpointManager
 from util.data import get_dataloaders
 from util.args import get_args
-from util.vis_pipnet import visualize_topk
+from util.vis_pipnet import vizualize_network
 
 
 # In[3]:
@@ -285,7 +285,7 @@ os.makedirs(run_vis_dir, exist_ok=True)
 
 
 if RUN_PRETRAINED_VIZ:
-    topks = visualize_topk(net, projectloader, len(classes), device, run_vis_dir, args, k=10,
+    topks = vizualize_network(net, projectloader, len(classes), device, run_vis_dir, args, k=10,
     					   plot_histograms=True, visualize_prototype_maps=True, are_pretraining_prototypes=True)
     print(f"Visualization saved to {run_vis_dir}")
 
@@ -329,7 +329,7 @@ os.makedirs(run_vis_dir, exist_ok=True)
 
 
 if RUN_BEST_TRAINED_VIZ:
-    topks, non_zero_counts_per_prototype_and_class = visualize_topk(net, projectloader, len(classes), device, run_vis_dir, args, k=10,
+    topks, non_zero_counts_per_prototype_and_class = vizualize_network(net, projectloader, len(classes), device, run_vis_dir, args, k=10,
                                             					    plot_histograms=True, visualize_prototype_maps=False, plot_always_histograms=True,
                                                                     normalize_frequencies=False, prototype_labels=checkpoint_to_load)
     print(f"Visualization saved to {run_vis_dir}")
