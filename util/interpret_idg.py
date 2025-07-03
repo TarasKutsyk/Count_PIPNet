@@ -12,6 +12,7 @@ import json
 import matplotlib.pyplot as plt
 from captum.attr import visualization as viz
 import matplotlib.cm as cm
+import matplotlib.colors as colors
 
 # Add base path to system path
 # This is needed to import modules from the project root
@@ -39,43 +40,77 @@ from pipnet.count_pipnet import get_count_network
 USE_GLOBAL_CFG = True
 
 GLOBAL_CFG = {
+    # Saliency Map Config
+    'saliency_map_mode': 'prototype',
+    'prototype_activation_threshold': 0.01,
+
+    # Model params
     'run_dir': str(base_path / 'runs' / 'pipnet' / '20250407_021157_15_pipnet_s21_stage7_p16'),
+    'model_name': 'pipnet', # Model name to select correct prototype labels
     'checkpoint_name': 'net_trained_best',
-    'saliency_map_mode': 'prototype', # 'logit' or 'prototype'
 
     # Dataset params
     'dataset': 'geometric_shapes_no_noise',
-    'image_path': 'class_6/img_0000.png',  # Set to a specific image path or leave as None for random sampling
-    'sample_from_classes': [ # List of class names to sample from (for random sampling per class)
+    'image_path': 'class_6/img_0000.png',
+    'sample_from_classes': [
         'class_1',
-        # 'class_2',
-        # 'class_3',
-        # 'class_4',
-        # 'class_5',
-        # 'class_6',
-        # 'class_7',
-        # 'class_8',
-        # 'class_9',
-    ], 
-    'target_class': None, # Set to a specific class index or leave as None
+        'class_2',
+        'class_3',
+        'class_4',
+        'class_5',
+        'class_6',
+        'class_7',
+        'class_8',
+        'class_9',
+    ],
+    'samples_count_per_class': 3,
+    'target_class': None,
 
     # Attribution method params
-    'attr_method': 'ig', # 'ig', 'lig' or 'idg'
-    'idg_steps': 200, # Number of interpolated samples
-    'idg_baseline': 0.0, # Baseline value for interpolation
-    'idg_batch_size': 10, # Number of images (x_i interpolated samples) to process in parallel
+    'attr_method': 'ig',
+    'idg_steps': 192,
+    'idg_baseline': 0.0,
+    'idg_batch_size': 16,
 
-    # Visualization params
-    'show_plots': True, # Whether to display the plots directly
-    'prototype_activation_threshold': 0.01, # Min activation for a prototype to be considered for saliancy map
-    'percentile': 98, # Percentile for clipping the attribution map
-    'plot_individual_prototypes': True, # Whether to plot each prototype's attribution map separately
-    'use_captum_viz': True, # If True, use Captum's vizualizer for individual prototype maps
-    'alpha_overlay': 0.75, # Alpha for the blended heatmap in Captum visualization
+    # --- Centralized Visualization Params ---
+    'viz': {
+        'show_plots': False,
+        'percentile': 98,
+        'plot_individual_prototypes': True,
+        'use_captum_viz': True,
+        'alpha_overlay': 0.7,
+        'cmap': 'inferno',          # High-contrast colormap
+        'title_fontsize': 16,
+        'w_space': 0.1,             # Horizontal space between subplots
+        'h_space': 0.25,            # Vertical space between subplots
+        'save_dpi': 300,            # High resolution for saved figures
+    },
 
-    'random_seed': 42, # Seed for random sampling,
+    'random_seed': 42,
     'gpu_id': 0,
     'output_dir': str(base_path / 'visualizations' / 'idg_interpretations'),
+}
+
+# --- NEW: Custom Label Definitions ---
+def class_idx_to_name(idx: int) -> str:
+    """Maps a class index to a human-readable name."""
+    class_map = {
+        0: "1 Circle", 1: "1 Triangle", 2: "1 Hexagon",
+        3: "2 Circles", 4: "2 Triangles", 5: "2 Hexagons",
+        6: "3 Circles", 7: "3 Triangles", 8: "3 Hexagons",
+    }
+    return class_map.get(idx, f"Class {idx}")
+
+# --- NEW: Parametric Prototype Labels ---
+# Define labels for different models in one place.
+ALL_PROTOTYPE_LABELS = {
+    'pipnet': {
+        0: "Count-1", 1: "Circ(3)", 2: "Tri(2, 3)", 3: "Count-1",
+        4: "Circ(:)", 5: "Dead", 6: "Tri(1, 3)", 7: "Hex(3)",
+        8: "Circ(2)", 9: "Hex(2, 3)", 10: "Hex(1)", 11: "Count-2",
+        12: "Circ(1, 2)", 13: "Hex(1, 2)", 14: "Count-1", 15: "Dead"
+    },
+    'default': {i: f"P{i}" for i in range(800)} # Fallback
 }
 
 def ATTR_FUNC(attr_method):
@@ -233,16 +268,17 @@ def interpret_prototypes(net, testloader, classes, device, config):
                 print(f"Warning: no images found for class '{cls_name}' – skipping.")
                 continue
 
-            chosen_path = random.choice(img_paths)
+            for sample_count in range(config.get('samples_count_per_class', 1)):
+                chosen_path = random.choice(img_paths)
 
-            # Create a shallow copy of config with updated image path and sampling disabled
-            new_config = dict(config)
-            # Store relative path so downstream naming logic (parent + stem) works unchanged
-            new_config['image_path'] = str(chosen_path.relative_to(dataset_test_root))
-            new_config['sample_from_classes'] = None  # prevent nested sampling
+                # Create a shallow copy of config with updated image path and sampling disabled
+                new_config = dict(config)
+                # Store relative path so downstream naming logic (parent + stem) works unchanged
+                new_config['image_path'] = str(chosen_path.relative_to(dataset_test_root))
+                new_config['sample_from_classes'] = None  # prevent nested sampling
 
-            print(f"Selected random image '{chosen_path.name}' from class '{cls_name}'.")
-            interpret_prototypes(net, testloader, classes, device, new_config)
+                print(f"Selected random image '{chosen_path.name}' from class '{cls_name}'.")
+                interpret_prototypes(net, testloader, classes, device, new_config)
 
         # After processing all classes we're done.
         return
@@ -250,6 +286,11 @@ def interpret_prototypes(net, testloader, classes, device, config):
     print("--- Interpreting Prototype Activations for a Single Image ---")
     attr_func = ATTR_FUNC(config['attr_method'])
     print("Using attribution method: " + config['attr_method'])
+
+    prototype_label_map = ALL_PROTOTYPE_LABELS.get(
+        config.get('model_name', 'default'),
+        ALL_PROTOTYPE_LABELS['default']
+    )
 
     # Load and transform the image
     try:
@@ -301,8 +342,8 @@ def interpret_prototypes(net, testloader, classes, device, config):
     wrapped_model = PIPNetPrototypeWrapper(net)
 
     # Get color scale
-    colors = px.colors.qualitative.Plotly
-    if len(active_protos_indices) > len(colors):
+    plotly_colors = px.colors.qualitative.Plotly
+    if len(active_protos_indices) > len(plotly_colors):
         print(f"Warning: More active prototypes than available colors. Colors will be reused.")
 
     # Store prototype index and color for legend
@@ -332,10 +373,10 @@ def interpret_prototypes(net, testloader, classes, device, config):
         attr_map_np = np.transpose(attr_map_np, (1, 2, 0))
         image_2d = np.sum(np.abs(attr_map_np), axis=2)
 
-        clipped_map = normalize_attribution_map(image_2d, config['percentile'], proto_idx.item())
+        clipped_map = normalize_attribution_map(image_2d, config['viz']['percentile'], proto_idx.item())
 
         # --- Additive Blending ---
-        color_hex = colors[i % len(colors)]
+        color_hex = plotly_colors[i % len(plotly_colors)]
         src_rgb = np.array(tuple(int(color_hex.lstrip('#')[j:j+2], 16) / 255.0 for j in (0, 2, 4)))
         
         # Add the weighted color of the current prototype to the RGB overlay
@@ -348,7 +389,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
         prototype_color_map.append({'prototype_idx': proto_idx.item(), 'color': color_hex})
 
         # Store individual map and its weighted activation if needed
-        if config.get('plot_individual_prototypes', False):
+        if config['viz']['plot_individual_prototypes']:
             # Store the raw numpy attribution map for individual plotting later
             individual_attribution_maps.append({'prototype_idx': proto_idx.item(), 'map': attr_map_np, 'color': color_hex})
             if target_class_idx is not None:
@@ -404,192 +445,81 @@ def interpret_prototypes(net, testloader, classes, device, config):
     
     plt.close(fig)
 
-    # --- Save Figure Containing All Individual Prototype Maps (if enabled) ---
-    if config.get('plot_individual_prototypes', False) and len(individual_attribution_maps) > 0:
+    # Save individual prototypes
+    viz_config = config['viz']
+    if viz_config.get('plot_individual_prototypes', False) and len(individual_attribution_maps) > 0:
         individual_output_dir = os.path.join(config['output_dir'], 'individual_prototypes')
         os.makedirs(individual_output_dir, exist_ok=True)
 
         num_maps = len(individual_attribution_maps)
-        num_cols = 2
-        num_rows = (num_maps + num_cols - 1) // num_cols  # Ceiling division
+        
+        # Force a single-column layout
+        num_cols = 1
+        num_rows = num_maps # Each map gets its own row
 
-        fig_ind, axes_ind = plt.subplots(num_rows, num_cols, figsize=(num_cols * 5, num_rows * 5), squeeze=False)
+        # Adjust figsize to be tall and narrow, scaling with the number of plots
+        fig_ind, axes_ind = plt.subplots(num_rows, num_cols, figsize=(6, num_rows * 5), squeeze=False)
         axes_ind = axes_ind.flatten()
 
-        # Helper to plot one prototype map on a given axis (supports captum & manual)
-        def _plot_single_prototype(ax, proto_item):
+        for idx, proto_item in enumerate(individual_attribution_maps):
+            ax = axes_ind[idx]
             proto_idx = proto_item['prototype_idx']
             attr_map_np = proto_item['map']
 
-            # Edge Case: near-constant attribution map
+            # Handle near-constant attribution maps
             if np.abs(np.max(attr_map_np) - np.min(attr_map_np)) < 1e-5:
                 ax.imshow(original_image_unnormalized)
-                contribution_str = ''
-                if proto_idx in individual_weighted_activations:
-                    contribution = individual_weighted_activations[proto_idx]
-                    contribution_str = f" (Contrib: {contribution:.2f})"
-
-                ax.set_title(f'Prototype {proto_idx} Attribution{contribution_str}\n' + 
-                             f'Constant Attribution of {np.mean(attr_map_np):.2f}')
-                ax.axis('off')
-                return
-
-            if config.get('use_captum_viz', False):
                 contribution_str = ""
                 if proto_idx in individual_weighted_activations:
                     contribution = individual_weighted_activations[proto_idx]
                     contribution_str = f" (Contrib: {contribution:.2f})"
                 
-                title = f'P{proto_idx} Attribution{contribution_str}'
-                viz.visualize_image_attr(
-                    attr=attr_map_np,
-                    original_image=original_image_unnormalized,
-                    method='blended_heat_map',
-                    sign='absolute_value',
-                    outlier_perc=100 - config['percentile'],
-                    plt_fig_axis=(fig_ind, ax),
-                    show_colorbar=True,
-                    title=title,
-                    alpha_overlay=config['alpha_overlay'],
-                    use_pyplot=False
+                prototype_display_name = prototype_label_map.get(proto_idx, f"P{proto_idx}")
+                title = (
+                    f"{prototype_display_name}{contribution_str}\n"
+                    f"Constant Attribution: {np.mean(attr_map_np):.2e}"
                 )
-            else:
-                image_2d = np.sum(np.abs(attr_map_np), axis=2)
-                clipped_map = normalize_attribution_map(image_2d, config['percentile'], proto_idx)
-
-                ax.imshow(original_image_unnormalized)
-                overlay = np.zeros((*original_image_unnormalized.shape[:2], 4))
-
-                color_rgb = np.array(tuple(int(proto_item['color'].lstrip('#')[j:j+2], 16) / 255.0 for j in (0, 2, 4)))
-                overlay[..., :3] = color_rgb
-                overlay[..., 3] = clipped_map
-                ax.imshow(overlay)
-
-                contribution_str = ""
-                if proto_idx in individual_weighted_activations:
-                    contribution = individual_weighted_activations[proto_idx]
-                    contribution_str = f" (Contrib: {contribution:.2f})"
-                ax.set_title(f'Prototype {proto_idx} Attribution{contribution_str}')
+                
+                ax.set_title(title, fontsize=12) # Kept the title on the subplot
                 ax.axis('off')
-        # end _plot_single_prototype
+                continue
 
-        # Populate sub-plots
-        for idx, proto_item in enumerate(individual_attribution_maps):
-            _plot_single_prototype(axes_ind[idx], proto_item)
+            # Normal visualization path
+            contribution_str = ""
+            if proto_idx in individual_weighted_activations:
+                contribution = individual_weighted_activations[proto_idx]
+                contribution_str = f" (Contrib: {contribution:.2f})"
+            
+            prototype_display_name = prototype_label_map.get(proto_idx, f"P{proto_idx}")
+            title = f"{prototype_display_name}{contribution_str}"
 
-        # Remove any unused axes
-        for idx in range(num_maps, len(axes_ind)):
-            fig_ind.delaxes(axes_ind[idx])
+            viz.visualize_image_attr(
+                attr=attr_map_np,
+                original_image=original_image_unnormalized,
+                method='blended_heat_map',
+                sign='absolute_value',
+                cmap=viz_config['cmap'],
+                outlier_perc=100 - viz_config['percentile'],
+                plt_fig_axis=(fig_ind, ax),
+                show_colorbar=False, # Colorbar remains disabled
+                title=title,         # The subplot title is kept as requested
+                alpha_overlay=viz_config['alpha_overlay'],
+                use_pyplot=False
+            )
 
+        # Use tight_layout for automatic spacing.
         plt.tight_layout()
-        plt.suptitle('Individual Prototype Attribution Maps', y=1.02)
 
-        # Save the complete figure (instead of separate pngs per prototype)
+        # Save the complete figure with high resolution
         fig_ind_path = os.path.join(individual_output_dir, f"individual_prototypes_{img_name}_{config['attr_method']}.png")
-        fig_ind.savefig(fig_ind_path, bbox_inches='tight')
-        print(f"Saved figure with all individual prototype maps to {fig_ind_path}")
+        fig_ind.savefig(fig_ind_path, dpi=viz_config['save_dpi'], bbox_inches='tight')
+        print(f"Saved stacked prototype attribution maps to {fig_ind_path}")
 
-    # --- Display Plots (if enabled) ---
-    if config.get('show_plots', False):
-        # Just display the figure we already created above
-        plt.show()
-        plt.close(fig_ind)
-
-        # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
-        # ax1.imshow(original_image_unnormalized)
-        # ax1.set_title(f'Original Image: {img_name}')
-        # ax1.axis('off')
-
-        # ax2.imshow(final_overlay)
-        # ax2.set_title(f'Composite Prototype Attributions ({len(active_protos_indices)} maps)')
-        # ax2.axis('off')
-
-        # # Create custom legend
-        # legend_handles = []
-        # for item in prototype_color_map:
-        #     color_rgb = tuple(int(item['color'].lstrip('#')[j:j+2], 16) / 255.0 for j in (0, 2, 4))
-        #     legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', 
-        #                                      markerfacecolor=color_rgb, markersize=10,
-        #                                      label=f'P{item['prototype_idx']}'))
-        # ax2.legend(handles=legend_handles, loc='upper left', bbox_to_anchor=(1, 1), title='Prototypes')
+        if viz_config.get('show_plots', False):
+            plt.show()
         
-        # plt.tight_layout()
-        # plt.show()
-
-        # if config.get('plot_individual_prototypes', False) and len(individual_attribution_maps) > 0:
-        #     num_maps = len(individual_attribution_maps)
-        #     num_cols = 2
-        #     num_rows = (num_maps + num_cols - 1) // num_cols  # Ceiling division
-
-        #     fig_ind, axes_ind = plt.subplots(num_rows, num_cols, figsize=(num_cols * 5, num_rows * 5), squeeze=False)
-        #     axes_ind = axes_ind.flatten()
-
-        #     if config.get('use_captum_viz', False):
-        #         # --- Captum Visualization Path for Display ---
-        #         print("--- Displaying Captum individual prototype visualization ---")
-        #         for idx, item in enumerate(individual_attribution_maps):
-        #             ax = axes_ind[idx]
-        #             attr_map_np = item['map']
-                    
-        #             # Edge Case: Handle near-zero attribution maps for display
-        #             if np.abs(np.max(attr_map_np) - np.min(attr_map_np)) < 1e-5:
-        #                 ax.imshow(original_image_unnormalized)
-        #                 ax.set_title(f'Prototype {item["prototype_idx"]} (Constant Attribution of {np.mean(attr_map_np):.2f})')
-        #                 ax.axis('off')
-        #                 continue
-
-        #             contribution_str = ""
-        #             if item['prototype_idx'] in individual_weighted_activations:
-        #                 contribution = individual_weighted_activations[item['prototype_idx']]
-        #                 contribution_str = f" (Contrib: {contribution:.2f})"
-                    
-        #             title = f'P{item["prototype_idx"]} Attribution{contribution_str}'
-
-        #             _ = viz.visualize_image_attr(
-        #                 attr=attr_map_np,
-        #                 original_image=original_image_unnormalized,
-        #                 method='blended_heat_map',
-        #                 sign='absolute_value',
-        #                 outlier_perc=100 - config['percentile'],
-        #                 plt_fig_axis=(fig_ind, ax),
-        #                 show_colorbar=True,
-        #                 title=title,
-        #                 alpha_overlay=config['alpha_overlay'],
-        #                 use_pyplot=False # Important to avoid showing the plot prematurely
-        #             )
-        #     else:
-        #         # --- Original Manual Visualization Path for Display ---
-        #         for idx, item in enumerate(individual_attribution_maps):
-        #             ax = axes_ind[idx]
-        #             attr_map_np = item['map']
-
-        #             # Re-calculate and normalize map for manual visualization
-        #             image_2d = np.sum(np.abs(attr_map_np), axis=2)
-        #             clipped_map = normalize_attribution_map(image_2d, config['percentile'], item['prototype_idx'])
-
-        #             ax.imshow(original_image_unnormalized)
-        #             overlay = np.zeros((*original_image_unnormalized.shape[:2], 4))
-        #             color_rgb = np.array(tuple(int(item['color'].lstrip('#')[j:j+2], 16) / 255.0 for j in (0, 2, 4)))
-        #             overlay[..., :3] = color_rgb
-        #             overlay[..., 3] = clipped_map
-        #             ax.imshow(overlay)
-
-        #             contribution_str = ""
-        #             if item['prototype_idx'] in individual_weighted_activations:
-        #                 contribution = individual_weighted_activations[item['prototype_idx']]
-        #                 contribution_str = f" (Contrib: {contribution:.2f})"
-
-        #             ax.set_title(f'Prototype {item["prototype_idx"]} Attribution{contribution_str}')
-        #             ax.axis('off')
-
-        #     # Common cleanup for both paths
-        #     for idx in range(num_maps, len(axes_ind)):
-        #         fig_ind.delaxes(axes_ind[idx])
-
-        #     plt.tight_layout()
-        #     plt.suptitle('Individual Prototype Attribution Maps', y=1.02)
-        #     plt.show()
-
+        plt.close(fig_ind)
+    
 def interpret_logits_for_dataset(net, testloader, classes, device, config):
     print("--- Interpreting Logits for a Sample from Each Class ---")
     # Wrap model for logit interpretation
