@@ -33,7 +33,7 @@ def vizualize_network(net, projectloader, num_classes, device, foldername,
                   plot_always_histograms=False, normalize_frequencies=True,
                   prototype_labels: Optional[str] = None,
                   only_important_prototypes: bool = False,
-                  plot_topk: bool = False,
+                  plot_topk: bool = True,
                   histogram_return_type='mean_values'):
     """
     Wrapper function for prototype visualization that delegates to the appropriate implementation
@@ -68,7 +68,7 @@ def vizualize_network_pipnet(net, projectloader, num_classes, device, foldername
                           visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
                           histogram_type='standard', plot_always_histograms=True,
                           normalize_frequencies=True, prototype_labels: Optional[str] = None,
-                          only_important_prototypes: bool = False, plot_topk: bool = False,
+                          only_important_prototypes: bool = False, plot_topk: bool = True,
                           histogram_return_type='mean_values'):
     """
     Original visualization function for standard PIPNet models.
@@ -496,7 +496,7 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
                                visualize_prototype_maps=True, max_feature_maps_per_prototype=3,
                                histogram_type='per-class', plot_always_histograms=False,
                                normalize_frequencies=True, prototype_labels: Optional[str] = None,
-                               only_important_prototypes: bool = False, plot_topk: bool = False,
+                               only_important_prototypes: bool = False, plot_topk: bool = True,
                                histogram_return_type='mean_values'):
     """
     Visualization function specially designed for CountPIPNet models.
@@ -764,71 +764,71 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
         print(f"{len(prototypes_not_used)} prototypes do not have any examples. Will be ignored in visualization.")
         
         # Create prototype visualizations uniformly sampled across count groups
-        all_tensors = []
-        tensors_per_prototype = {p: [] for p in prototype_selected_images.keys()}
-        saved = {p: 0 for p in prototype_selected_images.keys()}
+        if plot_topk:
+            all_tensors = []
+            tensors_per_prototype = {p: [] for p in prototype_selected_images.keys()}
+            saved = {p: 0 for p in prototype_selected_images.keys()}
 
-        for p, images in prototype_selected_images.items():
-            if p in prototypes_not_used:
-                continue
-            
-            # Group by count
-            count_groups = {}
-            for img_data in images:
-                count = img_data['count_group']
-                if count not in count_groups:
-                    count_groups[count] = []
-                # For the current prototype, form the {count -> [img_data]} structure
-                count_groups[count].append(img_data)
-            
-            # Sample uniformly across count groups
-            uniform_samples = []
-            if len(count_groups) > 0:
-                # Calculate samples per count group
-                samples_per_group = k // len(count_groups)
-                extra_samples = k % len(count_groups)
+            for p, images in prototype_selected_images.items():
+                if p in prototypes_not_used:
+                    continue
                 
-                # Collect samples from each count group
-                for count, count_images in sorted(count_groups.items()):
-                    # Sort by activation score
-                    sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
-                    # Take samples_per_group + 1 extra if needed
-                    samples_to_take = samples_per_group + (1 if extra_samples > 0 else 0)
-                    extra_samples -= 1 if extra_samples > 0 else 0
+                # Group by count
+                count_groups = {}
+                for img_data in images:
+                    count = img_data['count_group']
+                    if count not in count_groups:
+                        count_groups[count] = []
+                    # For the current prototype, form the {count -> [img_data]} structure
+                    count_groups[count].append(img_data)
+                
+                # Sample uniformly across count groups
+                uniform_samples = []
+                if len(count_groups) > 0:
+                    # Calculate samples per count group
+                    samples_per_group = k // len(count_groups)
+                    extra_samples = k % len(count_groups)
                     
-                    # Add samples from this count group
-                    uniform_samples.extend(sorted_images[:min(samples_to_take, len(sorted_images))])
-            
-            # If we don't have enough samples, add more from any group
-            if len(uniform_samples) < k:
-                # Collect all unused images
-                unused_images = []
-                for count, count_images in count_groups.items():
-                    # Sort by activation score
-                    sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
-                    # Find the cutoff point for this group
-                    samples_to_take = samples_per_group + (1 if count in list(sorted(count_groups.keys()))[:extra_samples] else 0)
-                    # Add unused images
-                    if len(sorted_images) > samples_to_take:
-                        unused_images.extend(sorted_images[samples_to_take:])
+                    # Collect samples from each count group
+                    for count, count_images in sorted(count_groups.items()):
+                        # Sort by activation score
+                        sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
+                        # Take samples_per_group + 1 extra if needed
+                        samples_to_take = samples_per_group + (1 if extra_samples > 0 else 0)
+                        extra_samples -= 1 if extra_samples > 0 else 0
+                        
+                        # Add samples from this count group
+                        uniform_samples.extend(sorted_images[:min(samples_to_take, len(sorted_images))])
                 
-                # Sort unused images by activation score
-                unused_images.sort(key=lambda x: x['model_count'], reverse=True)
-                # Add as many as needed to reach k
-                uniform_samples.extend(unused_images[:min(k - len(uniform_samples), len(unused_images))])
-            
-            # Ensure we have at most k samples
-            uniform_samples = uniform_samples[:k]
-            
-            # Sort the final samples by activation score
-            uniform_samples.sort(key=lambda x: x['model_count'], reverse=True)
-            
-            # Add to the tensor collection
-            for img_data in uniform_samples:
-                saved[p] += 1
-                tensors_per_prototype[p].append(img_data['patch_tensor'])
-            
-            if plot_topk:
+                # If we don't have enough samples, add more from any group
+                if len(uniform_samples) < k:
+                    # Collect all unused images
+                    unused_images = []
+                    for count, count_images in count_groups.items():
+                        # Sort by activation score
+                        sorted_images = sorted(count_images, key=lambda x: x['model_count'], reverse=True)
+                        # Find the cutoff point for this group
+                        samples_to_take = samples_per_group + (1 if count in list(sorted(count_groups.keys()))[:extra_samples] else 0)
+                        # Add unused images
+                        if len(sorted_images) > samples_to_take:
+                            unused_images.extend(sorted_images[samples_to_take:])
+                    
+                    # Sort unused images by activation score
+                    unused_images.sort(key=lambda x: x['model_count'], reverse=True)
+                    # Add as many as needed to reach k
+                    uniform_samples.extend(unused_images[:min(k - len(uniform_samples), len(unused_images))])
+                
+                # Ensure we have at most k samples
+                uniform_samples = uniform_samples[:k]
+                
+                # Sort the final samples by activation score
+                uniform_samples.sort(key=lambda x: x['model_count'], reverse=True)
+                
+                # Add to the tensor collection
+                for img_data in uniform_samples:
+                    saved[p] += 1
+                    tensors_per_prototype[p].append(img_data['patch_tensor'])
+                
                 # Create and save the grid for this prototype
                 if len(images) > 0:
                     try:
@@ -876,7 +876,7 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
                     print(f"Error creating combined grid: {e}")
             else:
                 print("Prototypes not visualized. Try to pretrain longer.", flush=True)
-        
+    
     # Create feature map visualizations with additional count information
     if visualize_prototype_maps:
         import matplotlib.pyplot as plt
