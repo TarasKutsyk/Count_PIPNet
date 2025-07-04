@@ -178,31 +178,13 @@ def calculate_loss(proto_features, pooled, out, ys1, align_pf_weight, t_weight, 
     if is_count_pipnet:
         C = tanh_loss_coeff # Coefficient for sigmoid normalization, this can be tuned based on the dataset and model
 
-        # Apply sigmoid to normalize activations to [0,1] range
-        # normalized_counts_1 = torch.sigmoid(pooled1 - C)  # [batch_size, num_prototypes]
-        # normalized_counts_2 = torch.sigmoid(pooled2 - C)  # [batch_size, num_prototypes]
-
         normalized_counts_1 = C * pooled1
         normalized_counts_2 = C * pooled2
-
-        # assert net is not None, "When using count pipnet, the net must be passed in for rounding."
-        # assert hasattr(net.module, 'ste_round'), "The net must have a ste_round method for count pipnet."
-        # rounded_counts_1 = net.module.ste_round(pooled1)
-        # rounded_counts_2 = net.module.ste_round(pooled2)
-
-        # # Clamp to max_count
-        # clamped_counts_1 = torch.clamp(rounded_counts_1, 0, net.module._max_count)
-        # clamped_counts_2 = torch.clamp(rounded_counts_2, 0, net.module._max_count)
-
-        # normalized_counts_1 = clamped_counts_1 / C # Normalize to [0,1] range for loss calculation
-        # normalized_counts_2 = clamped_counts_2 / C # Normalize to [0,1] range for loss calculation
 
         # Print the max and mean of the normalized counts (across prototypes) for debugging purposes
         if verbose:
             print(f'tanh_loss_coeff = {C}', flush=True)
             print('Using standard linear normalization')
-            # print(f"Total normalized count 1: {torch.sum(normalized_counts_1,dim=0)}", flush=True)
-            # print(f"Total normalized count 2: {torch.sum(normalized_counts_2,dim=0)}", flush=True)
     else:
         # No need to normalize for pipnet
         normalized_counts_1 = pooled1

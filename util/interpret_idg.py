@@ -63,7 +63,7 @@ GLOBAL_CFG = {
         'class_8',
         'class_9',
     ],
-    'samples_count_per_class': 3,
+    'samples_count_per_class': 1,
     'target_class': None,
 
     # Attribution method params
@@ -74,7 +74,8 @@ GLOBAL_CFG = {
 
     # --- Centralized Visualization Params ---
     'viz': {
-        'show_plots': False,
+        'show_plots': True,
+        'sign': 'absolute_value', # Chosen sign of attributions to visualize. Supported options are: 'all', 'positive', 'negative', 'absolute_value'
         'percentile': 98,
         'plot_individual_prototypes': True,
         'use_captum_viz': True,
@@ -497,7 +498,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
                 attr=attr_map_np,
                 original_image=original_image_unnormalized,
                 method='blended_heat_map',
-                sign='absolute_value',
+                sign=viz_config['sign'],
                 cmap=viz_config['cmap'],
                 outlier_perc=100 - viz_config['percentile'],
                 plt_fig_axis=(fig_ind, ax),
