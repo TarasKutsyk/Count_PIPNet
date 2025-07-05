@@ -24,7 +24,7 @@ class CountPIPNet(nn.Module):
                  intermediate_layer: nn.Module, 
                  classification_layer: nn.Module,
                  max_count: int = 3,
-                 use_ste: bool = False):
+                 use_ste: bool = True):
         """
         Initialize the CountPIPNet model.
         
@@ -208,7 +208,7 @@ class NonNegLinear(nn.Module):
 
 # Cleaner channel detection for get_count_network function
 def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int = 3, 
-                      use_ste: bool = False, device=None):
+                      use_ste: bool = True, device=None):
     """
     Create a CountPIPNet model with the specified parameters.
     

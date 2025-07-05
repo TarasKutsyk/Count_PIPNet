@@ -299,7 +299,8 @@ def run_pipnet(args=None):
 
     with torch.no_grad():
         topks = vizualize_network(net, projectloader, len(classes), device, 'visualised_pretrained_prototypes_topk', args,
-                               k=10, are_pretraining_prototypes=True, plot_histograms=True, visualize_prototype_maps=False)
+                                  k=10, are_pretraining_prototypes=True, plot_histograms=False, visualize_prototype_maps=False,
+                                  plot_topk=False)
         
     # SECOND TRAINING PHASE
     # re-initialize optimizers and schedulers for second training phase
@@ -450,7 +451,8 @@ def run_pipnet(args=None):
         # Create a dedicated folder for the best model prototypes
         best_model_folder = f'visualised_prototypes_topk_best_model_epoch{best_model_info["epoch"]}'
         topks_best = vizualize_network(net, projectloader, len(classes), device, best_model_folder, args,
-                                    plot_histograms=False, visualize_prototype_maps=False)
+                                       plot_histograms=False, visualize_prototype_maps=False,
+                                       plot_topk=False, are_pretraining_prototypes=False)
         print(f"Best model prototypes visualized in folder: {best_model_folder}", flush=True)
     else:
         print("Failed to load best model for prototype visualization", flush=True)

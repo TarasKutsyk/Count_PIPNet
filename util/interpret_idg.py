@@ -32,7 +32,7 @@ import sys
 sys.path.append(str(base_path))
 
 from util.data import get_dataloaders, get_data
-from util.saliencyMethods import IDG, IG
+from util.saliency_methods import IDG, IG
 from pipnet.pipnet import get_pipnet
 from pipnet.count_pipnet import get_count_network
 
