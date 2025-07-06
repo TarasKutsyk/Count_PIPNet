@@ -61,7 +61,8 @@ class OneHotEncoder(nn.Module):
     Can operate with or without Straight-Through Estimator for backpropagation.
     """
     def __init__(self, num_bins: int = 4, use_ste: bool = False, respect_active_grad: bool = False,
-                 num_prototypes: int = None, device: Optional[torch.device] = None):
+                 num_prototypes: int = None, device: Optional[torch.device] = None,
+                 positive_grad_strategy: Optional[str] = None):
         """
         Args:
             num_bins: Number of count bins (0, 1, 2, 3+)
@@ -74,6 +75,7 @@ class OneHotEncoder(nn.Module):
         self.device = device
         self.use_ste = use_ste
         self.respect_active_grad = respect_active_grad
+        self.positive_grad_strategy = positive_grad_strategy
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -86,7 +88,7 @@ class OneHotEncoder(nn.Module):
             Encoded tensor [batch_size, num_prototypes * num_bins]
         """
         if self.use_ste:
-            encodings = ModifiedSTEFunction.apply(x, self.num_bins, self.respect_active_grad)
+            encodings = ModifiedSTEFunction.apply(x, self.num_bins, self.respect_active_grad, self.positive_grad_strategy)
         else:
             encodings = create_modified_encoding(x, self.num_bins)
 
@@ -162,7 +164,8 @@ class ModifiedSTEFunction(torch.autograd.Function):
     If max gradient is at the current position, the resulting grad is zero.
     """
     @staticmethod
-    def forward(ctx, counts: torch.Tensor, max_count: int, respect_active_grad: bool) -> torch.Tensor:
+    def forward(ctx, counts: torch.Tensor, max_count: int, respect_active_grad: bool,
+                positive_grad_strategy: Optional[str] = None) -> torch.Tensor:
         """
         Forward pass: Create modified encodings based on rounded counts.
         The output tensor is NOT flattened here; flattening happens in OneHotEncoder.
@@ -178,6 +181,7 @@ class ModifiedSTEFunction(torch.autograd.Function):
         ctx.save_for_backward(counts, rounded_counts)
         ctx.max_count = max_count
         ctx.respect_active_grad = respect_active_grad
+        ctx.positive_grad_strategy = positive_grad_strategy
         # No need to store dims, shape is known from saved tensors
 
         # Use the shared function to create encodings based on rounded values
@@ -201,6 +205,8 @@ class ModifiedSTEFunction(torch.autograd.Function):
         max_count = ctx.max_count
         # Retrieve the renamed flag
         respect_active_grad = ctx.respect_active_grad
+        positive_grad_strategy = ctx.positive_grad_strategy
+
         batch_size, num_prototypes = counts.shape
 
         # --- grad_output arrives with shape [batch_size, num_prototypes, max_count] ---
@@ -228,32 +234,48 @@ class ModifiedSTEFunction(torch.autograd.Function):
             min_signed_grad_val_nz = min_signed_grad_val[non_zero_mask]
             min_signed_grad_idx_nz = min_signed_grad_idx[non_zero_mask]
 
-            # --- Apply "follow the MINIMUM gradient" logic ---
+            # --- Apply "follow the NEGATIVE gradient" logic ---
             final_grad_nz = torch.zeros_like(min_signed_grad_val_nz)
-            gradient_magnitude = torch.abs(min_signed_grad_val_nz)
+            all_pos_grad_mask = min_signed_grad_val_nz > 0
 
-            # Case 1: Minimum gradient index is lower than current (decrease counts)
-            decrease_mask = min_signed_grad_idx_nz < current_pos_idx_nz
-            final_grad_nz[decrease_mask] = gradient_magnitude[decrease_mask] # Positive grad -> decrease counts
+            # Special case for 'max_grad' to bypass directional logic
+            if positive_grad_strategy == "max_grad" and torch.any(all_pos_grad_mask):
+                max_grad_val_nz, _ = torch.max(grad_output[non_zero_mask], dim=1)
+                # For all-positive cases, directly pass the max gradient value
+                final_grad_nz[all_pos_grad_mask] = max_grad_val_nz[all_pos_grad_mask]
+                
+                # Identify cases that still have negative gradients and need standard processing
+                standard_proc_mask = ~all_pos_grad_mask
+                if torch.any(standard_proc_mask):
+                    # Apply standard directional logic only to the remaining cases
+                    grad_mag_std = torch.abs(min_signed_grad_val_nz[standard_proc_mask])
+                    decrease_mask = min_signed_grad_idx_nz[standard_proc_mask] < current_pos_idx_nz[standard_proc_mask]
+                    increase_mask = min_signed_grad_idx_nz[standard_proc_mask] > current_pos_idx_nz[standard_proc_mask]
+                    
+                    final_grad_nz[standard_proc_mask][decrease_mask] = grad_mag_std[decrease_mask]
+                    final_grad_nz[standard_proc_mask][increase_mask] = -grad_mag_std[increase_mask]
+            else:
+                # --- This block handles 'none' and 'current_grad' strategies ---
+                gradient_magnitude = torch.abs(min_signed_grad_val_nz) # Default magnitude
+                if positive_grad_strategy == 'current_grad' and torch.any(all_pos_grad_mask):
+                    # For all-positive cases, use grad at current position for magnitude
+                    grad_at_current_pos = torch.gather(grad_output[non_zero_mask], 1, current_pos_idx_nz.unsqueeze(1)).squeeze(1)
+                    gradient_magnitude[all_pos_grad_mask] = grad_at_current_pos[all_pos_grad_mask]
+                
+                # Apply standard directional logic using the determined magnitude
+                decrease_mask = min_signed_grad_idx_nz < current_pos_idx_nz
+                increase_mask = min_signed_grad_idx_nz > current_pos_idx_nz
+                final_grad_nz[decrease_mask] = gradient_magnitude[decrease_mask]
+                final_grad_nz[increase_mask] = -gradient_magnitude[increase_mask]
 
-            # Case 2: Minimum gradient index is higher than current (increase counts)
-            increase_mask = min_signed_grad_idx_nz > current_pos_idx_nz
-            final_grad_nz[increase_mask] = -gradient_magnitude[increase_mask] # Negative grad -> increase counts
-
-            # Case 3: Minimum gradient index is AT the current position (stable)
-            # Gradient remains zero.
-
-            # --- Apply Optional Stability Logic (Reversed Condition) ---
-            # Zero out the gradient if the current position's gradient is NEGATIVE
-            # (meaning the current state is already desirable according to the loss)
+            # This is applied as a final stability check on the computed gradient.
             if respect_active_grad:
                 grad_at_current_pos = torch.gather(
                     grad_output[non_zero_mask], 1, current_pos_idx_nz.unsqueeze(1)
                 ).squeeze(1)
                 # Find where the gradient at the current position is negative
                 negative_current_grad_mask = grad_at_current_pos < 0
-                # Zero out the calculated gradient (final_grad_nz) where the current gradient was negative.
-                # This stabilizes the count if the current state is already good.
+                # Zero out the calculated gradient where the current state is already favorable.
                 final_grad_nz[negative_current_grad_mask] = 0.0
 
             # Assign the calculated gradients back
@@ -267,8 +289,8 @@ class ModifiedSTEFunction(torch.autograd.Function):
             # Pass the negative gradient back to increase counts from 0 towards 1.
             counts_grad[zero_mask][negative_grad_mask] = grad_for_count_1[negative_grad_mask]
 
-        # Return gradient w.r.t counts, and None for max_count and the flag
-        return counts_grad, None, None
+        # Return gradient w.r.t counts, and Nones for other args
+        return counts_grad, None, None, None
 
 class BilinearIntermediate(nn.Module):
     """
