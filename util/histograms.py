@@ -386,6 +386,7 @@ def plot_prototype_activations_by_class(
     plot_always_histograms: bool = False,
     num_bins_continuous: int = 50,
     normalize_frequencies: bool = True,
+    filter_outlier_prototypes: bool = True,
     return_type='mean_values'
 ) -> List[int]:
     """
@@ -500,8 +501,8 @@ def plot_prototype_activations_by_class(
     for p_idx in initial_prototypes_to_plot:
         # Check index validity against collected data
         if p_idx >= all_activations.shape[1]:
-             print(f"Warning (Filtering): Skipping prototype index {p_idx} - out of bounds.")
-             continue
+            print(f"Warning (Filtering): Skipping prototype index {p_idx} - out of bounds.")
+            continue
 
         proto_acts = all_activations[:, p_idx]
         # Calculate average based only on activations above the near-zero threshold
@@ -521,7 +522,7 @@ def plot_prototype_activations_by_class(
         for p in skipped_outlier_prototypes:
             print(f"  - Prototype {p}: Avg Activation = {overall_avg_activations[p]:.2f}")
     elif len(initial_prototypes_to_plot) > 0:
-         print(f"No prototypes filtered based on outlier threshold (>{plot_outlier_threshold:.1f}).")
+        print(f"No prototypes filtered based on outlier threshold (>{plot_outlier_threshold:.1f}).")
 
     # --- 5. Generate Near-Zero Activation Report ---
     # Report based on the final list of prototypes that will be plotted
@@ -550,6 +551,28 @@ def plot_prototype_activations_by_class(
     mean_prototype_value_per_class = {}
     # Similarly, for non-zero counts
     non_zero_counts_per_class = {}
+
+    if not filter_outlier_prototypes:
+        # If not filtering, we need to include all the prototypes into the mean_prototype_value_per_class and non_zero_counts_per_class
+        for p in initial_prototypes_to_plot:
+            if p not in final_prototypes_to_plot:
+                proto_activations = all_activations[:, p]
+                current_non_zero_counts_per_class = {}
+                current_mean_prototype_value_per_class = []
+                
+                for cls in unique_classes:
+                    class_mask = (all_class_labels == cls)
+                    num_class_samples = int(np.sum(class_mask))
+                    if num_class_samples > 0:
+                        # Count activations >= threshold within this class
+                        current_non_zero_counts_per_class[cls] = int(np.sum(proto_activations[class_mask] >= near_zero_threshold))
+                        current_mean_prototype_value_per_class.append(np.mean(proto_activations[class_mask]))
+                    else:
+                        current_non_zero_counts_per_class[cls] = 0
+                        current_mean_prototype_value_per_class.append(0.0)
+                
+                non_zero_counts_per_class[p] = current_non_zero_counts_per_class
+                mean_prototype_value_per_class[p] = current_mean_prototype_value_per_class
 
     print(f"\nGenerating individual plots for {len(final_prototypes_to_plot)} prototypes...")
     # Loop over the FINAL filtered list of prototypes
@@ -648,8 +671,7 @@ def plot_prototype_activations_by_class(
                 bar_width = None
             else:
                 # --- Logic for Continuous Activations (PIPNet) ---
-                # Define histogram range slightly wider than [0, 1] to catch edges if needed
-                # Clip max range to avoid issues if activations slightly exceed 1 due to float precision
+                # Clip max range to the max of activations, which makes it safe also for CountPIPNet
                 hist_max_val = max(1.0, np.max(non_zero_activations) if len(non_zero_activations) > 0 else 1.0)
                 hist_range = (near_zero_threshold, hist_max_val * 1.01) # Add small buffer at max
 
@@ -732,12 +754,12 @@ def plot_prototype_activations_by_class(
 
         # Add Vertical Reference Lines
         if is_count_pipnet and max_count is not None:
-            # Add dotted lines *between* integer count values
             for count_val in range(1, int(np.ceil(x_range[1]))):
-                 fig.add_vline(x=count_val - 0.5, line=dict(color="darkgrey", width=1, dash="dot"))
-                 # Add text label *at* the integer count position (e.g., "1", "2")
-                 fig.add_annotation(x=count_val, y=1.0, yref='paper', yshift=5, text=str(count_val),
-                                    showarrow=False, font=dict(size=10, color="darkgrey"))
+                 fig.add_vline(x=count_val, line=dict(color="darkgrey", width=1, dash="dot"))
+                 # Add text label *at* the integer count position (e.g., "1", "2"), rotated 90 degrees
+                #  fig.add_annotation(x=count_val, y=0.0, yref='paper', yshift=5, text=str(count_val),
+                #                     showarrow=False, font=dict(size=10, color="darkgrey"),
+                #                     rotation=90)
         else:
              # For standard PIPNet, add a reference line at a common threshold (e.g., 0.1)
              line_val = 0.1
@@ -773,40 +795,79 @@ def plot_prototype_activations_by_class(
         #         )
 
         # --- 6h. Configure Plot Layout ---
-        fig.update_layout(
-            title=dict(
-                # text=plot_title, # Set the main title text
-                x=0.5,           # Center the title
-                y=0.95           # Position title slightly lower
-            ),
-            width=1100, height=650, # Define overall plot dimensions
-            template="plotly_white", # Use a clean background theme
+        if not is_count_pipnet:
+            fig.update_layout(
+                title=dict(
+                    # text=plot_title, # Set the main title text
+                    x=0.5,           # Center the title
+                    y=0.95           # Position title slightly lower
+                ),
+                width=1100, height=650, # Define overall plot dimensions
+                template="plotly_white", # Use a clean background theme
 
-            xaxis_title="Activation Value" if not is_count_pipnet else "Count Value",
-            yaxis_title="Normalized Frequency" if normalize_frequencies else 'Count', # Describe y-axis content
+                xaxis_title="Activation Value" if not is_count_pipnet else "Count Value",
+                yaxis_title="Normalized Frequency" if normalize_frequencies else 'Count', # Describe y-axis content
 
-            xaxis=dict(range=x_range), # Apply calculated x-axis range
+                xaxis=dict(range=x_range), # Apply calculated x-axis range
 
-            yaxis=dict(
-                autorange=True,      # Automatically determine y-axis range based on data
-                showticklabels=True, # Display frequency values on the y-axis
-                title_standoff=10,   # Space between y-axis title and ticks
-                tickformat=".2f"     # Format y-axis tick labels to 2 decimal places
-            ),
+                yaxis=dict(
+                    autorange=True,      # Automatically determine y-axis range based on data
+                    showticklabels=True, # Display frequency values on the y-axis
+                    title_standoff=10,   # Space between y-axis title and ticks
+                    tickformat=".2f"     # Format y-axis tick labels to 2 decimal places
+                ),
 
-            legend_title_text="Class", # Set the title for the legend box
-            barmode='overlay',       # Overlay bars from different classes at the same x-value
-            bargap=0.1,              # Space between bars for different x-values
-            bargroupgap=0.0,         # No space between bars at the same x-value (for overlay)
+                legend_title_text="Class", # Set the title for the legend box
+                barmode='overlay',       # Overlay bars from different classes at the same x-value
+                bargap=0.1,              # Space between bars for different x-values
+                bargroupgap=0.0,         # No space between bars at the same x-value (for overlay)
 
-            legend=dict(
-                itemsizing='constant', # Keep legend marker size consistent
-                font=dict(size=19),    # Adjust legend font size
-                traceorder='reversed', # Match legend order to the plotting order
-                bgcolor='rgba(255,255,255,0.7)' # Semi-transparent background for legend
-            ),
-            margin=dict(t=120, b=80, l=80, r=50) # Adjust plot margins (top, bottom, left, right)
-        )
+                legend=dict(
+                    itemsizing='constant', # Keep legend marker size consistent
+                    font=dict(size=19),    # Adjust legend font size
+                    traceorder='reversed', # Match legend order to the plotting order
+                    bgcolor='rgba(255,255,255,0.7)' # Semi-transparent background for legend
+                ),
+                margin=dict(t=120, b=80, l=80, r=50) # Adjust plot margins (top, bottom, left, right)
+            )
+        else:
+            fig.update_layout(
+                title=dict(
+                    # text=plot_title, # Set the main title text
+                    x=0.5,           # Center the title
+                    y=0.95           # Position title slightly lower
+                ),
+                width=1100, height=650, # Define overall plot dimensions
+                template="plotly_white", # Use a clean background theme
+
+                xaxis_title="Activation Value" if not is_count_pipnet else "Count Value",
+                yaxis_title="Normalized Frequency" if normalize_frequencies else 'Count', # Describe y-axis content
+
+                xaxis=dict(range=x_range,
+                        #    dtick=1,
+                        #    tickangle=45
+                           ), # Apply calculated x-axis range
+
+                yaxis=dict(
+                    autorange=True,      # Automatically determine y-axis range based on data
+                    showticklabels=True, # Display frequency values on the y-axis
+                    title_standoff=10,   # Space between y-axis title and ticks
+                    tickformat=".2f"     # Format y-axis tick labels to 2 decimal places
+                ),
+
+                legend_title_text="Class", # Set the title for the legend box
+                barmode='overlay',       # Overlay bars from different classes at the same x-value
+                bargap=0.1,              # Space between bars for different x-values
+                bargroupgap=0.0,         # No space between bars at the same x-value (for overlay)
+
+                legend=dict(
+                    itemsizing='constant', # Keep legend marker size consistent
+                    font=dict(size=19),    # Adjust legend font size
+                    traceorder='reversed', # Match legend order to the plotting order
+                    bgcolor='rgba(255,255,255,0.7)' # Semi-transparent background for legend
+                ),
+                margin=dict(t=120, b=80, l=80, r=50) # Adjust plot margins (top, bottom, left, right)
+            )
 
         # --- 6i. Save Plot to Files ---
         try:

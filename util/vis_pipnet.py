@@ -34,7 +34,8 @@ def vizualize_network(net, projectloader, num_classes, device, foldername,
                   prototype_labels: Optional[str] = None,
                   only_important_prototypes: bool = False,
                   plot_topk: bool = True,
-                  histogram_return_type='mean_values'):
+                  histogram_return_type='mean_values',
+                  filter_outlier_prototypes: bool = True):
     """
     Wrapper function for prototype visualization that delegates to the appropriate implementation
     based on the model type (CountPIPNet vs regular PIPNet).
@@ -49,7 +50,8 @@ def vizualize_network(net, projectloader, num_classes, device, foldername,
             visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type,
             plot_always_histograms=plot_always_histograms, normalize_frequencies=normalize_frequencies,
             only_important_prototypes=only_important_prototypes, plot_topk=plot_topk,
-            prototype_labels=prototype_labels, histogram_return_type=histogram_return_type
+            prototype_labels=prototype_labels, histogram_return_type=histogram_return_type,
+            filter_outlier_prototypes=filter_outlier_prototypes
         )
     else:
         return vizualize_network_pipnet(
@@ -58,7 +60,8 @@ def vizualize_network(net, projectloader, num_classes, device, foldername,
             visualize_prototype_maps, max_feature_maps_per_prototype, histogram_type=histogram_type,
             plot_always_histograms=plot_always_histograms, normalize_frequencies=normalize_frequencies,
             prototype_labels=prototype_labels, only_important_prototypes=only_important_prototypes,
-            plot_topk=plot_topk, histogram_return_type=histogram_return_type
+            plot_topk=plot_topk, histogram_return_type=histogram_return_type,
+            filter_outlier_prototypes=filter_outlier_prototypes
         )
 
 @torch.no_grad()
@@ -69,7 +72,8 @@ def vizualize_network_pipnet(net, projectloader, num_classes, device, foldername
                           histogram_type='standard', plot_always_histograms=True,
                           normalize_frequencies=True, prototype_labels: Optional[str] = None,
                           only_important_prototypes: bool = False, plot_topk: bool = True,
-                          histogram_return_type='mean_values'):
+                          histogram_return_type='mean_values',
+                          filter_outlier_prototypes: bool = True):
     """
     Original visualization function for standard PIPNet models.
     This version uses the single-pass approach to avoid inconsistencies.
@@ -130,7 +134,8 @@ def vizualize_network_pipnet(net, projectloader, num_classes, device, foldername
                 is_count_pipnet=False,
                 plot_always_histograms=plot_always_histograms,
                 normalize_frequencies=normalize_frequencies,
-                return_type=histogram_return_type
+                return_type=histogram_return_type,
+                filter_outlier_prototypes=filter_outlier_prototypes
             )
         else:
             plot_prototype_activations_histograms(
@@ -497,7 +502,8 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
                                histogram_type='per-class', plot_always_histograms=False,
                                normalize_frequencies=True, prototype_labels: Optional[str] = None,
                                only_important_prototypes: bool = False, plot_topk: bool = True,
-                               histogram_return_type='mean_values'):
+                               histogram_return_type='mean_values',
+                               filter_outlier_prototypes: bool = True):
     """
     Visualization function specially designed for CountPIPNet models.
     This version uses class information to select examples with different counts
@@ -622,7 +628,8 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
                 is_count_pipnet=True,
                 plot_always_histograms=plot_always_histograms,
                 normalize_frequencies=normalize_frequencies,
-                return_type=histogram_return_type
+                return_type=histogram_return_type,
+                filter_outlier_prototypes=filter_outlier_prototypes
             )
         else:
             plot_prototype_activations_histograms(
@@ -633,7 +640,7 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
                 only_important_prototypes=only_important_prototypes,
                 prototype_importance=prototype_importance,
                 importance_threshold=1e-1,
-                is_count_pipnet=True,
+                is_count_pipnet=True
             )
 
     # Create feature maps directory if needed
