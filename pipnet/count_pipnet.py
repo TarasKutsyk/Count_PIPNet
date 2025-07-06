@@ -24,7 +24,8 @@ class CountPIPNet(nn.Module):
                  intermediate_layer: nn.Module, 
                  classification_layer: nn.Module,
                  max_count: int = 3,
-                 use_ste: bool = True):
+                 use_ste: bool = True,
+                 backward_clamp_strategy: str = 'Identity'):
         """
         Initialize the CountPIPNet model.
         
@@ -50,12 +51,19 @@ class CountPIPNet(nn.Module):
         self._classification = classification_layer
         self._intermediate = intermediate_layer
 
+        assert backward_clamp_strategy in ['Identity', 'Gated']
+        print(f"Using backward clamp strategy: {backward_clamp_strategy}", flush=True)
+
+        self._is_clamp_backward_identity = (backward_clamp_strategy == 'Identity')
+
         self._max_count = max_count
         self._use_ste = use_ste
         self._multiplier = classification_layer.normalization_multiplier
         
         # STE function for rounding (only used if use_ste=True)
         self.ste_round = STE_Round.apply
+        # STE function for clamping (only used if use_ste=True)
+        self.ste_clamp = ClampSTE.apply
         
     def forward(self, xs, inference=False):
         """
@@ -80,12 +88,12 @@ class CountPIPNet(nn.Module):
         if self._use_ste:
             # During training with STE, we round in forward pass but pass gradients through
             rounded_counts = self.ste_round(counts)
+            clamped_counts = self.ste_clamp(rounded_counts, 0, self._max_count, 
+                                            self._is_clamp_backward_identity)
         else:
             rounded_counts = counts.round() if inference else counts
-        
-        # Clamp to max_count
-        clamped_counts = torch.clamp(rounded_counts, 0, self._max_count)
-            
+            clamped_counts = torch.clamp(rounded_counts, 0, self._max_count)
+                    
         # Process through intermediate layer
         intermediate_features = self._intermediate(clamped_counts)
         # E.g., if intermediate layer is OneHotEncoder, this will be [batch_size, num_prototypes * max_count]
@@ -271,7 +279,10 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     # Get positive gradient strategy
     positive_grad_strategy = getattr(args, 'positive_grad_strategy', None)
     print(f"Using positive gradient strategy: {positive_grad_strategy}", flush=True)
-    
+
+    backward_clamp_strategy = getattr(args, 'backward_clamp_strategy', 'Identity')
+    print(f"Using backward clamp strategy: {backward_clamp_strategy}", flush=True)
+
     # Create the appropriate intermediate layer
     if intermediate_type == 'linear':
         # Use linear intermediate layer
@@ -312,7 +323,8 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
         classification_layer=classification_layer,
         intermediate_layer=intermediate_layer,
         max_count=max_count,
-        use_ste=use_ste
+        use_ste=use_ste,
+        backward_clamp_strategy=backward_clamp_strategy
     )
     
     return model, num_prototypes

@@ -55,6 +55,34 @@ class STE_Round(torch.autograd.Function):
         return grad_output
 
 
+class ClampSTE(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, min_val, max_val,
+                is_backward_identity: bool):
+        ctx.save_for_backward(input)
+        ctx.min_val = min_val
+        ctx.max_val = max_val
+
+        ctx.is_backward_identity = is_backward_identity
+        return input.clamp(min_val, max_val)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, = ctx.saved_tensors
+        is_backward_identity = ctx.is_backward_identity
+
+        if is_backward_identity:
+            # Identity: pass gradients through unmodified
+            pass
+        else: # Using "Gated" strategy
+            # Create a mask for the elements that were within the clamp range
+            grad_mask = (input >= ctx.min_val) & (input <= ctx.max_val)
+            
+            # "Gate" the gradient: pass it through only where the mask is True
+            grad_output = grad_output * grad_mask.float()
+
+        return grad_output, None, None, None
+
 class OneHotEncoder(nn.Module):
     """
     Converts count values to modified encodings where count 0 maps to all zeros.

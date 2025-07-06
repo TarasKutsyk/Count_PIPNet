@@ -186,7 +186,11 @@ def get_args() -> argparse.Namespace:
                         default=None,
                         choices=[None, 'current_grad', 'max_grad'],
                         help='Strategy for handling positive gradients in CountPIPNet. Choices are None (default, no special handling), "current_grad" (use current-position gradient), or "max_grad" (use maximum gradient).')
-
+    parser.add_argument('--backward_clamp_strategy',
+                        type=str,
+                        default='Identity',
+                        choices=['Identity', 'Gated'],
+                        help='Strategy for backward pass clamping in CountPIPNet. Choices are "Identity" (default, straight-through) or "Gated" (gradient gating).')
     # Parse known args first to get the config file path
     known_args, _ = parser.parse_known_args()
     
