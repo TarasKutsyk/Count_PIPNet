@@ -181,6 +181,11 @@ def get_args() -> argparse.Namespace:
                         choices=[True, False],
                         default=True,
                         help='Whether to use normalization multiplier & zeroing out weights mechanism from the original PiP-Net paper')
+    parser.add_argument('--positive_grad_strategy',
+                        type=str,
+                        default=None,
+                        choices=[None, 'current_grad', 'max_grad'],
+                        help='Strategy for handling positive gradients in CountPIPNet. Choices are None (default, no special handling), "current_grad" (use current-position gradient), or "max_grad" (use maximum gradient).')
 
     # Parse known args first to get the config file path
     known_args, _ = parser.parse_known_args()

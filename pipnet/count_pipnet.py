@@ -268,6 +268,9 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     
     # Get intermediate layer type
     intermediate_type = getattr(args, 'intermediate_layer', 'onehot')
+    # Get positive gradient strategy
+    positive_grad_strategy = getattr(args, 'positive_grad_strategy', None)
+    print(f"Using positive gradient strategy: {positive_grad_strategy}", flush=True)
     
     # Create the appropriate intermediate layer
     if intermediate_type == 'linear':
@@ -286,7 +289,8 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     elif intermediate_type == 'onehot':
         # Use one-hot encoder (original approach)
         intermediate_layer = OneHotEncoder(max_count, use_ste=use_ste, respect_active_grad=False, 
-                                           num_prototypes=num_prototypes, device=device)
+                                           num_prototypes=num_prototypes, device=device,
+                                           positive_grad_strategy=positive_grad_strategy)
         expanded_dim = num_prototypes * max_count
     elif intermediate_type == 'identity':
         # Identity intermediate layer
