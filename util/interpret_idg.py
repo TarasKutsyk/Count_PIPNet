@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 import torch.nn as nn
 import argparse
@@ -34,7 +35,7 @@ sys.path.append(str(base_path))
 from util.data import get_dataloaders, get_data
 from util.saliency_methods import IDG, IG
 from pipnet.pipnet import get_pipnet
-from pipnet.count_pipnet import get_count_network
+from pipnet.count_pipnet import get_count_network, OneHotEncoder
 
 # --- Configuration ---
 USE_GLOBAL_CFG = True
@@ -42,11 +43,11 @@ USE_GLOBAL_CFG = True
 GLOBAL_CFG = {
     # Saliency Map Config
     'saliency_map_mode': 'prototype',
-    'prototype_activation_threshold': 0.01,
+    'prototype_activation_threshold': 0.1,
 
     # Model params
-    'run_dir': str(base_path / 'runs' / 'pipnet' / '20250407_021157_15_pipnet_s21_stage7_p16'),
-    'model_name': 'pipnet', # Model name to select correct prototype labels
+    'run_dir': str(base_path / 'runs' / 'final' / '20250706_032740_5_final_s21_stage7_p16_onehot_current_grad_train'),
+    'model_name': 'count_pipnet', # Model name to select correct prototype labels
     'checkpoint_name': 'net_trained_best',
 
     # Dataset params
@@ -135,11 +136,18 @@ class PIPNetWrapper(nn.Module):
         return out
 
 class PIPNetPrototypeWrapper(nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, is_count_pipnet):
         super(PIPNetPrototypeWrapper, self).__init__()
         self.model = model
+        self.is_count_pipnet = is_count_pipnet
+
+        print(f'Wrapping the {"CountPIPNet" if is_count_pipnet else "PIPNet"} model for prototype attribution.')
 
     def forward(self, x):
+        if self.is_count_pipnet:
+            _, counts, _ = self.model(x, inference=False)
+            return counts
+
         _, pooled, _ = self.model(x)
         return pooled
 
@@ -220,18 +228,19 @@ def interpret(config):
     net, testloader, classes, device, args = load_model_for_interpretation(
         config['run_dir'], config['checkpoint_name'], config['gpu_id']
     )
+    is_count_pipnet = args.model == 'count_pipnet'
 
     # --- Interpretation Mode ---
     if config['saliency_map_mode'] == 'prototype':
         if not config['image_path']:
             raise ValueError("Image path must be provided for 'prototype' saliency map mode.")
-        interpret_prototypes(net, testloader, classes, device, config)
+        interpret_prototypes(net, testloader, classes, device, config, is_count_pipnet)
     elif config['saliency_map_mode'] == 'logit':
-        interpret_logits_for_dataset(net, testloader, classes, device, config)
+        interpret_logits_for_dataset(net, testloader, classes, device, config, is_count_pipnet)
     else:
         raise ValueError(f"Unknown saliency_map_mode: {config['saliency_map_mode']}")
 
-def interpret_prototypes(net, testloader, classes, device, config):
+def interpret_prototypes(net, testloader, classes, device, config, is_count_pipnet):
     """Interpret prototype activations for one or more images.
 
     If config contains ``sample_from_classes`` as a list of class names, the function
@@ -241,6 +250,14 @@ def interpret_prototypes(net, testloader, classes, device, config):
     the normal single-image logic is executed.  When the key is absent or ``None``,
     the original single-image path in ``config['image_path']`` is used.
     """
+
+    # Extract model name from run_dir for file naming
+    run_dir_name = Path(config['run_dir']).name
+    match = re.search('[a-zA-Z]', run_dir_name)
+    if match:
+        model_name_prefix = run_dir_name[match.start():]
+    else:
+        model_name_prefix = run_dir_name
 
     # ------------------------------------------------------------------
     # Optional: handle random sampling of a single image **per class**
@@ -279,7 +296,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
                 new_config['sample_from_classes'] = None  # prevent nested sampling
 
                 print(f"Selected random image '{chosen_path.name}' from class '{cls_name}'.")
-                interpret_prototypes(net, testloader, classes, device, new_config)
+                interpret_prototypes(net, testloader, classes, device, new_config, is_count_pipnet)
 
         # After processing all classes we're done.
         return
@@ -314,22 +331,54 @@ def interpret_prototypes(net, testloader, classes, device, config):
     transform = testloader.dataset.transform
     image_tensor = transform(image).unsqueeze(0).to(device)
 
-    # Get prototype activations for the image
-    _, pooled, _ = net(image_tensor)
-    pooled = pooled.squeeze(0)
+    # Determine the weighted prototype activations
+    if not is_count_pipnet:
+        # Get prototype activations for the image
+        _, pooled, _ = net(image_tensor)
+        pooled = pooled.squeeze(0)
 
-    # Get classification weights
-    classification_weights = net.module._classification.weight # shape [num_classes, num_prototypes]
+        # Get classification weights
+        classification_weights = net.module._classification.weight # shape [num_classes, num_prototypes]
 
-    # Calculate weighted activations for the target class
-    if target_class_idx is None:
-        # Fallback to simple activation filtering if target_class_idx is not specified
-        print("Warning: target_class_idx not specified. Filtering prototypes by activation only.")
-        weighted_activations = pooled
+        # Calculate weighted activations for the target class
+        if target_class_idx is None:
+            # Fallback to simple activation filtering if target_class_idx is not specified
+            print("Warning: target_class_idx not specified. Filtering prototypes by activation only.")
+            weighted_activations = pooled
+        else:
+            # Multiply prototype activations by their classification weights for the target class
+            target_class_weights = classification_weights[target_class_idx]
+            weighted_activations = pooled * target_class_weights
     else:
-        # Multiply prototype activations by their classification weights for the target class
-        target_class_weights = classification_weights[target_class_idx]
-        weighted_activations = pooled * target_class_weights
+        # Get prototype activations for the image
+        _, clamped_counts, _ = net(image_tensor, inference=True)
+
+        # if the intermediate layer is onehot, use intermediate features as scalars for `get_prototype_importance_per_class`
+        is_intermediate_onehot = isinstance(net.module._intermediate, OneHotEncoder)
+        if is_intermediate_onehot:
+            importance_scalars = net.module._intermediate(clamped_counts)
+        else:
+            importance_scalars = None
+        
+        clamped_counts = clamped_counts.squeeze(0)
+        importance_scalars = importance_scalars.squeeze(0)
+
+        # Construct the virtual classification matrix
+        classification_weights = torch.zeros((net.module._num_classes, net.module._num_prototypes), device=image_tensor.device)
+        for i in range(clamped_counts.shape[0]):
+            # Get importance of this prototype for each class
+            prototype_importance_per_class = net.module.get_prototype_importance_per_class(i, importance_scalars)
+            classification_weights[:, i] = prototype_importance_per_class.to(image_tensor.device)
+
+        # Calculate weighted activations for the target class
+        if target_class_idx is None:
+            # Fallback to simple activation filtering if target_class_idx is not specified
+            print("Warning: target_class_idx not specified. Filtering prototypes by activation only.")
+            weighted_activations = clamped_counts
+        else:
+            # Multiply prototype activations by their classification weights for the target class
+            target_class_weights = classification_weights[target_class_idx]
+            weighted_activations = clamped_counts * target_class_weights
 
     # Filter for prototypes whose weighted activation is above the threshold
     active_protos_indices = torch.where(weighted_activations > config['prototype_activation_threshold'])[0]
@@ -340,7 +389,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
     print(f"Found {len(active_protos_indices)} active prototypes.")
 
     # Wrap model for prototype interpretation
-    wrapped_model = PIPNetPrototypeWrapper(net)
+    wrapped_model = PIPNetPrototypeWrapper(net, is_count_pipnet=is_count_pipnet)
 
     # Get color scale
     plotly_colors = px.colors.qualitative.Plotly
@@ -417,7 +466,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
     final_overlay = np.concatenate((final_rgb_overlay, final_alpha_overlay), axis=-1)
 
     # --- Save Combined Original and Composite Plot ---
-    combined_save_path = os.path.join(config['output_dir'], f"combined_prototypes_{img_name}_{config['attr_method']}.png")
+    combined_save_path = os.path.join(config['output_dir'], f"{model_name_prefix}_combined_prototypes_{img_name}_{config['attr_method']}.png")
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
     ax1.imshow(original_image_unnormalized)
@@ -467,6 +516,12 @@ def interpret_prototypes(net, testloader, classes, device, config):
             proto_idx = proto_item['prototype_idx']
             attr_map_np = proto_item['map']
 
+            # Save the attribution map into the data/prototype_maps folder
+            saving_path = base_path / "data" / "prototype_maps"
+            
+            torch.save(attr_map_np, os.path.join(saving_path, 
+            f"{model_name_prefix}_individual_prototype_{proto_idx}_{img_name}_{config['attr_method']}.pt"))
+
             # Handle near-constant attribution maps
             if np.abs(np.max(attr_map_np) - np.min(attr_map_np)) < 1e-5:
                 ax.imshow(original_image_unnormalized)
@@ -512,7 +567,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
         plt.tight_layout()
 
         # Save the complete figure with high resolution
-        fig_ind_path = os.path.join(individual_output_dir, f"individual_prototypes_{img_name}_{config['attr_method']}.png")
+        fig_ind_path = os.path.join(individual_output_dir, f"{model_name_prefix}_individual_prototypes_{img_name}_{config['attr_method']}.png")
         fig_ind.savefig(fig_ind_path, dpi=viz_config['save_dpi'], bbox_inches='tight')
         print(f"Saved stacked prototype attribution maps to {fig_ind_path}")
 
@@ -521,7 +576,7 @@ def interpret_prototypes(net, testloader, classes, device, config):
         
         plt.close(fig_ind)
     
-def interpret_logits_for_dataset(net, testloader, classes, device, config):
+def interpret_logits_for_dataset(net, testloader, classes, device, config, is_count_pipnet):
     print("--- Interpreting Logits for a Sample from Each Class ---")
     # Wrap model for logit interpretation
     wrapped_model = PIPNetWrapper(net)

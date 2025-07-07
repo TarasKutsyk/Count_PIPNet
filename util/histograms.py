@@ -28,7 +28,8 @@ def class_idx_to_name(idx: int) -> str:
 def net_forward(
     xs: torch.Tensor,
     net: torch.nn.Module,
-    is_count_pipnet: bool = True
+    is_count_pipnet: bool = True,
+    get_continuous_activations: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Performs a forward pass through the network, handling the specific
@@ -38,6 +39,7 @@ def net_forward(
         xs: Input image tensor batch.
         net: The trained PIPNet or CountPIPNet model.
         is_count_pipnet: Boolean flag indicating the model type.
+        get_continuous_activations: Boolean flag indicating whether to get continuous activations.
 
     Returns:
         A tuple containing:
@@ -45,8 +47,13 @@ def net_forward(
         - pooled: Pooled activation values (raw counts for CountPIPNet in non-inference).
         - out: Final classification layer output logits.
     """
-    # CountPIPNet requires non-inference mode during analysis to get raw counts
-    run_in_inference_mode = not is_count_pipnet
+    if not is_count_pipnet: # PIPNet case
+        run_in_inference_mode = True
+    else: # CountPIPNet case
+        if get_continuous_activations:
+            run_in_inference_mode = False
+        else:
+            run_in_inference_mode = True
 
     with torch.no_grad():
         # Assuming the network's forward method signature is consistent
@@ -62,7 +69,8 @@ def _collect_activations(
     device: torch.device,
     is_count_pipnet: bool,
     max_images: int,
-    num_prototypes: int
+    num_prototypes: int,
+    get_continuous_activations: bool = False
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Collects pooled prototype activations and corresponding ground-truth class labels
@@ -75,6 +83,7 @@ def _collect_activations(
         is_count_pipnet: Flag indicating the model type.
         max_images: Maximum number of images to process.
         num_prototypes: Expected number of prototypes from the model.
+        get_continuous_activations: Whether to collect continuous activations when CountPIPNet is used.
 
     Returns:
         Tuple (activations, labels) as numpy arrays, or (None, None) on failure.
@@ -112,7 +121,8 @@ def _collect_activations(
 
             # Perform the forward pass to get activations
             try:
-                 _, pooled, _ = net_forward(xs, net, is_count_pipnet)
+                 _, pooled, _ = net_forward(xs, net, is_count_pipnet,
+                 get_continuous_activations=get_continuous_activations)
             except Exception as e:
                  print(f"\nError during forward pass: {e}. Skipping batch.")
                  continue
@@ -487,7 +497,8 @@ def plot_prototype_activations_by_class(
     # --- 3. Data Collection ---
     # Collect activations and labels using the helper function
     all_activations, all_class_labels = _collect_activations(
-        net, dataloader, device, is_count_pipnet, max_images, num_prototypes
+        net, dataloader, device, is_count_pipnet, max_images, num_prototypes,
+        get_continuous_activations=plot_always_histograms
     )
 
     # Exit if data collection failed
@@ -665,8 +676,8 @@ def plot_prototype_activations_by_class(
                 values, counts = np.unique(non_zero_activations, return_counts=True)
                 # Normalize frequency within this class's non-zero activations
                 normalized_freq = counts / len(non_zero_activations)
-                # X-values are the unique count values converted to strings for categorical axis
-                x_values_for_plot = [str(v) for v in values]
+                # X-values are the unique count values
+                x_values_for_plot = values
                 # Bar width is less relevant for categorical, let Plotly handle
                 bar_width = None
             else:
@@ -738,23 +749,9 @@ def plot_prototype_activations_by_class(
 
         non_zero_text = "<br>".join(non_zero_text_lines) # Combine lines with HTML line breaks
 
-        # Add the annotation box to the plot
-        fig.add_annotation(
-            x=0.02, y=0.98,           # Position near top-left corner
-            xref="paper", yref="paper", # Use relative paper coordinates
-            text=non_zero_text,       # Formatted text showing non-zero stats
-            showarrow=False,          # No arrow pointing to data
-            bgcolor="rgba(255,255,255,0.85)", # Semi-transparent white background
-            bordercolor="black",      # Black border
-            borderwidth=1,
-            align='left',             # Align text to the left within the box
-            valign='top',             # Align box to the top
-            font=dict(size=19)        # Font size for annotation
-        )
-
         # Add Vertical Reference Lines
         if is_count_pipnet and max_count is not None:
-            for count_val in range(1, int(np.ceil(x_range[1]))):
+            for count_val in range(1, int(np.floor(x_range[1])) + 1):
                  fig.add_vline(x=count_val, line=dict(color="darkgrey", width=1, dash="dot"))
                  # Add text label *at* the integer count position (e.g., "1", "2"), rotated 90 degrees
                 #  fig.add_annotation(x=count_val, y=0.0, yref='paper', yshift=5, text=str(count_val),
@@ -795,7 +792,7 @@ def plot_prototype_activations_by_class(
         #         )
 
         # --- 6h. Configure Plot Layout ---
-        if not is_count_pipnet:
+        if not (is_count_pipnet and not plot_always_histograms):
             fig.update_layout(
                 title=dict(
                     # text=plot_title, # Set the main title text
@@ -830,7 +827,21 @@ def plot_prototype_activations_by_class(
                 ),
                 margin=dict(t=120, b=80, l=80, r=50) # Adjust plot margins (top, bottom, left, right)
             )
-        else:
+
+            # Add the annotation box to the plot
+            fig.add_annotation(
+                x=0.02, y=0.98,           # Position near top-left corner
+                xref="paper", yref="paper", # Use relative paper coordinates
+                text=non_zero_text,       # Formatted text showing non-zero stats
+                showarrow=False,          # No arrow pointing to data
+                bgcolor="rgba(255,255,255,0.85)", # Semi-transparent white background
+                bordercolor="black",      # Black border
+                borderwidth=1,
+                align='left',             # Align text to the left within the box
+                valign='top',             # Align box to the top
+                font=dict(size=19)        # Font size for annotation
+            )
+        else: # CountPIPNet case
             fig.update_layout(
                 title=dict(
                     # text=plot_title, # Set the main title text
@@ -856,7 +867,7 @@ def plot_prototype_activations_by_class(
                 ),
 
                 legend_title_text="Class", # Set the title for the legend box
-                barmode='overlay',       # Overlay bars from different classes at the same x-value
+                barmode='group',       # Group bars from different classes at the same x-value
                 bargap=0.1,              # Space between bars for different x-values
                 bargroupgap=0.0,         # No space between bars at the same x-value (for overlay)
 
@@ -867,6 +878,20 @@ def plot_prototype_activations_by_class(
                     bgcolor='rgba(255,255,255,0.7)' # Semi-transparent background for legend
                 ),
                 margin=dict(t=120, b=80, l=80, r=50) # Adjust plot margins (top, bottom, left, right)
+            )
+
+            # Add the annotation box to the plot, in the top-right corner
+            fig.add_annotation(
+                x=0.02, y=0.98,           # Position near top-left corner
+                xref="paper", yref="paper", # Use relative paper coordinates
+                text=non_zero_text,       # Formatted text showing non-zero stats
+                showarrow=False,          # No arrow pointing to data
+                bgcolor="rgba(255,255,255,0.85)", # Semi-transparent white background
+                bordercolor="black",      # Black border
+                borderwidth=1,
+                align='left',             # Align text to the left within the box
+                valign='top',             # Align box to the top
+                font=dict(size=19)        # Font size for annotation
             )
 
         # --- 6i. Save Plot to Files ---
@@ -1177,14 +1202,3 @@ def plot_prototype_activations_histograms(net, dataloader, device, output_dir,
     write_image(fig, os.path.join(output_dir, "all_prototypes_histograms.pdf"), engine="orca")
     
     return prototypes_to_plot
-
-
-def net_forward(xs, net, is_count_pipnet=True):
-    """
-    Performs a forward pass with suitable params depending on which network (pipnet or count_pipnet) is used.
-    """
-    run_in_inference = not is_count_pipnet # for count-pip-net run the model in training mode, for pipnet otherwise
-    with torch.no_grad():
-        pfs, pooled, out = net(xs, inference=run_in_inference)
-
-    return pfs, pooled, out

@@ -72,7 +72,7 @@ def eval_pipnet(net,
                 # print('(TEST) Setting small weights to zero...')
                 net.module._classification.weight.copy_(torch.clamp(net.module._classification.weight.data - 1e-3, min=0.)) 
             # Use the model to classify this batch of input data
-            _, pooled, out = net(xs, inference=not is_count_pipnet)
+            _, pooled, out = net(xs, inference=True)
 
             max_out_score, ys_pred = torch.max(out, dim=1)
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(out**net.module._classification.normalization_multiplier)),dim=1),dim=1)

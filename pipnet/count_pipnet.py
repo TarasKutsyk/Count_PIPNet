@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 from typing import List, Tuple, Dict, Optional, Union, Callable
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from .count_pipnet_utils import *
 
@@ -93,9 +95,9 @@ class CountPIPNet(nn.Module):
         # Apply classification layer
         out = self._classification(intermediate_features)  # [batch_size, num_classes]
         
-        # In inference mode, return intermediate_features for interpretability
+        # In inference mode, return clamped_counts for interpretability
         if inference:
-            return proto_features, intermediate_features, out
+            return proto_features, clamped_counts, out
         # In training, return original counts for input to L_T loss term
         return proto_features, counts, out
     
@@ -113,12 +115,20 @@ class CountPIPNet(nn.Module):
         counts = proto_features.sum(dim=(2, 3))
         return counts
     
-    def get_prototype_importance_per_class(self, prototype_idx):
+    def get_prototype_importance_per_class(self, prototype_idx, classifier_input_scalars = None):
         intermediate_layer = self._intermediate
 
         # Get the mapping from the given prototype to its "influence" on the classifiers' input X
         # this will return the weights of the same shape as X: typically [num_prototypes * max_count]
         classifier_input_weights = intermediate_layer.prototype_to_classifier_input_weights(prototype_idx) 
+
+        if classifier_input_scalars is not None:
+            assert classifier_input_scalars.shape == classifier_input_weights.shape, "Classifier input scalars must have the same shape as the classifier input weights" + \
+                  "\nclassifier_input_weights.shape: " + str(classifier_input_weights.shape) + \
+                  "\nclassifier_input_scalars.shape: " + str(classifier_input_scalars.shape)
+            
+            classifier_input_weights = classifier_input_weights * classifier_input_scalars
+
         # Get the absolute weights to avoid cancellation effects
         classifier_input_weights = torch.abs(classifier_input_weights)
 
@@ -205,6 +215,75 @@ class NonNegLinear(nn.Module):
         """
         return F.linear(input, torch.relu(self.weight), self.bias)
 
+def calculate_virtual_weights(net, dataloader, device, custom_onehot_scale=False):
+    def plot_mean_intermediate_features(mean_intermediate_features, num_prototypes, max_count):
+        assert mean_intermediate_features.shape[0] == num_prototypes * max_count, \
+            f"Expected shape ({num_prototypes * max_count},), but got {mean_intermediate_features.shape}"
+
+        # Reshape to a grid [num_prototypes x max_count]
+        feature_grid = mean_intermediate_features.view(num_prototypes, max_count).cpu().numpy()
+
+        plt.figure(figsize=(max(6, max_count * 0.5), max(4, num_prototypes * 0.4)))
+        im = plt.imshow(feature_grid, aspect='auto', cmap='coolwarm')
+        plt.colorbar(im, label='Mean Feature Value')
+        plt.xlabel('Count index')
+        plt.ylabel('Prototype index')
+        plt.title('Mean Intermediate Features Grid')
+        plt.tight_layout()
+        plt.show()
+
+    is_intermediate_onehot = isinstance(net.module._intermediate, OneHotEncoder)
+
+    if is_intermediate_onehot and custom_onehot_scale:
+        print("Intermediate is onehot, computing mean intermediate features...")
+
+        # Estimate mean intermediate features from clamped counts across the entire dataset
+        pbar_collect = tqdm(dataloader, desc="Estimating mean intermediate features", ncols=100, leave=False)
+        all_clamped_counts = []
+
+        with torch.no_grad():
+            for xs, ys in pbar_collect:
+                xs = xs.to(device)
+
+                # Perform the forward pass to get activations
+                try:
+                    _, clamped_counts, _ = net(xs, inference=True) # inference=True to get clamped counts
+                except Exception as e:
+                    print(f"\nError during forward pass: {e}. Skipping batch.")
+                    continue
+
+                # Store the results from the current batch
+                all_clamped_counts.append(clamped_counts)
+        
+        # Cleanly close the progress bar
+        pbar_collect.close()
+
+        # Concatenate all clamped counts over batches
+        all_clamped_counts = torch.cat(all_clamped_counts, dim=0)
+        print("all_clamped_counts.shape: ", all_clamped_counts.shape)
+
+        # Compute intermediate features
+        intermediate_features = net.module._intermediate(all_clamped_counts)
+        print("intermediate_features.shape: ", intermediate_features.shape)
+        # Average over batches
+        mean_intermediate_features = intermediate_features.mean(dim=0)
+
+        plot_mean_intermediate_features(mean_intermediate_features, net.module._num_prototypes, net.module._max_count)
+
+        classifier_input_scalars = mean_intermediate_features
+    else:
+        classifier_input_scalars = None
+
+    # Construct the virtual classification matrix
+    classification_weights = torch.zeros((net.module._num_classes, net.module._num_prototypes), device=device)
+
+    for i in range(net.module._num_prototypes):
+        # Get importance of this prototype for each class
+        prototype_importance_per_class = net.module.get_prototype_importance_per_class(i, classifier_input_scalars)
+        classification_weights[:, i] = prototype_importance_per_class.to(device)
+
+    # To compute the importance, multiply the mean intermediate features by the classification weights
+    return classification_weights
 
 # Cleaner channel detection for get_count_network function
 def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int = 3, 

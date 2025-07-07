@@ -19,7 +19,7 @@ def net_forward(xs, net, is_count_pipnet=True):
     """
     Performs a forward pass with suitable params depending on which network (pipnet or count_pipnet) is used.
     """
-    run_in_inference = not is_count_pipnet # for count-pip-net run the model in training mode, for pipnet otherwise
+    run_in_inference = True # not is_count_pipnet # for count-pip-net run the model in training mode, for pipnet otherwise
     with torch.no_grad():
         pfs, pooled, out = net(xs, inference=run_in_inference)
 
@@ -579,8 +579,7 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
             xs, ys = next(iter(projectloader))
             xs, ys = xs.to(device), ys.to(device)
             
-            # Run the model - inference should be False to get raw counts
-            pfs, pooled, out = net(xs, inference=False)
+            pfs, pooled, out = net(xs, inference=True)
 
             pooled = pooled.squeeze(0)
             pfs = pfs.squeeze(0)
@@ -673,7 +672,7 @@ def vizualize_network_count_pipnet(net, projectloader, num_classes, device, fold
             
             with torch.no_grad():
                 # Get model outputs
-                proto_features, pooled_counts, out = net(xs, inference=False)
+                proto_features, pooled_counts, out = net(xs, inference=True)
                 
                 # Check if model abstained
                 outmax = torch.amax(out, dim=1)[0]
