@@ -223,6 +223,63 @@ class NonNegLinear(nn.Module):
         """
         return F.linear(input, torch.relu(self.weight), self.bias)
 
+def estimate_mean_intermediate_features(net, dataloader, device,
+                                        return_full_data=False):
+    """
+    Estimate mean intermediate features from clamped counts across the entire dataset.
+
+    Args:
+        net: The network (should support inference and _intermediate)
+        dataloader: DataLoader providing (xs, ys) batches
+        device: Device to perform computation on
+
+    Returns:
+        mean_intermediate_features: Tensor of mean intermediate features
+    """
+    from tqdm import tqdm
+    import torch
+
+    pbar_collect = tqdm(dataloader, desc="Estimating mean intermediate features", ncols=100, leave=False)
+    all_clamped_counts = []
+    all_class_labels = []
+
+    with torch.no_grad():
+        for xs, ys in pbar_collect:
+            xs = xs.to(device)
+
+            # Perform the forward pass to get activations
+            try:
+                _, clamped_counts, _ = net(xs, inference=True)  # inference=True to get clamped counts
+            except Exception as e:
+                print(f"\nError during forward pass: {e}. Skipping batch.")
+                continue
+
+            # Store the results from the current batch
+            all_clamped_counts.append(clamped_counts)
+            all_class_labels.append(ys)
+
+    # Cleanly close the progress bar
+    pbar_collect.close()
+
+    # Concatenate all clamped counts over batches
+    all_clamped_counts = torch.cat(all_clamped_counts, dim=0)
+    print("all_clamped_counts.shape: ", all_clamped_counts.shape)
+
+    all_class_labels = torch.cat(all_class_labels, dim=0)
+    print("all_class_labels.shape: ", all_class_labels.shape)
+
+    # Compute intermediate features
+    intermediate_features = net.module._intermediate(all_clamped_counts)
+    print("intermediate_features.shape: ", intermediate_features.shape)
+
+    # Average over batches
+    mean_intermediate_features = intermediate_features.mean(dim=0)
+
+    if return_full_data:
+        return intermediate_features, all_class_labels
+
+    return mean_intermediate_features
+
 def calculate_virtual_weights(net, dataloader, device, custom_onehot_scale=False):
     def plot_mean_intermediate_features(mean_intermediate_features, num_prototypes, max_count):
         assert mean_intermediate_features.shape[0] == num_prototypes * max_count, \
@@ -245,37 +302,7 @@ def calculate_virtual_weights(net, dataloader, device, custom_onehot_scale=False
     if is_intermediate_onehot and custom_onehot_scale:
         print("Intermediate is onehot, computing mean intermediate features...")
 
-        # Estimate mean intermediate features from clamped counts across the entire dataset
-        pbar_collect = tqdm(dataloader, desc="Estimating mean intermediate features", ncols=100, leave=False)
-        all_clamped_counts = []
-
-        with torch.no_grad():
-            for xs, ys in pbar_collect:
-                xs = xs.to(device)
-
-                # Perform the forward pass to get activations
-                try:
-                    _, clamped_counts, _ = net(xs, inference=True) # inference=True to get clamped counts
-                except Exception as e:
-                    print(f"\nError during forward pass: {e}. Skipping batch.")
-                    continue
-
-                # Store the results from the current batch
-                all_clamped_counts.append(clamped_counts)
-        
-        # Cleanly close the progress bar
-        pbar_collect.close()
-
-        # Concatenate all clamped counts over batches
-        all_clamped_counts = torch.cat(all_clamped_counts, dim=0)
-        print("all_clamped_counts.shape: ", all_clamped_counts.shape)
-
-        # Compute intermediate features
-        intermediate_features = net.module._intermediate(all_clamped_counts)
-        print("intermediate_features.shape: ", intermediate_features.shape)
-        # Average over batches
-        mean_intermediate_features = intermediate_features.mean(dim=0)
-
+        mean_intermediate_features = estimate_mean_intermediate_features(net, dataloader, device)
         plot_mean_intermediate_features(mean_intermediate_features, net.module._num_prototypes, net.module._max_count)
 
         classifier_input_scalars = mean_intermediate_features
@@ -359,7 +386,7 @@ def get_count_network(num_classes: int, args: argparse.Namespace, max_count: int
     positive_grad_strategy = getattr(args, 'positive_grad_strategy', None)
     print(f"Using positive gradient strategy: {positive_grad_strategy}", flush=True)
 
-    backward_clamp_strategy = getattr(args, 'backward_clamp_strategy', 'Identity')
+    backward_clamp_strategy = getattr(args, 'backward_clamp_strategy', 'Gated')
     print(f"Using backward clamp strategy: {backward_clamp_strategy}", flush=True)
 
     # Create the appropriate intermediate layer

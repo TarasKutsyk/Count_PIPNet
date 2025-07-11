@@ -1,5 +1,6 @@
 data/
 visualizations/
+visualizations_pipeline/
 runs/
 configs/
 evaluations/

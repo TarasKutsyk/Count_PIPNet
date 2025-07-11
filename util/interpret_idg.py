@@ -1,5 +1,6 @@
 import os
 import re
+import math
 import torch
 import torch.nn as nn
 import argparse
@@ -35,7 +36,9 @@ sys.path.append(str(base_path))
 from util.data import get_dataloaders, get_data
 from util.saliency_methods import IDG, IG
 from pipnet.pipnet import get_pipnet
-from pipnet.count_pipnet import get_count_network, OneHotEncoder
+from pipnet.count_pipnet import get_count_network, OneHotEncoder, calculate_virtual_weights
+from util.enums import prototype_labels as PROTO_LABELS_DICT
+from util.histograms import class_idx_to_name
 
 # --- Configuration ---
 USE_GLOBAL_CFG = True
@@ -43,20 +46,20 @@ USE_GLOBAL_CFG = True
 GLOBAL_CFG = {
     # Saliency Map Config
     'saliency_map_mode': 'prototype',
-    'prototype_activation_threshold': 0.1,
+    'prototype_activation_threshold': 0.01,
 
     # Model params
-    'run_dir': str(base_path / 'runs' / 'final' / '20250706_032740_5_final_s21_stage7_p16_onehot_current_grad_train'),
-    'model_name': 'count_pipnet', # Model name to select correct prototype labels
+    'run_dir': str(base_path / 'runs' / 'final' / '20250407_021157_15_pipnet_s21_stage7_p16'), #20250706_032740_5_final_s21_stage7_p16_onehot_current_grad_train 
+    'model_name': '20250407_021157_15_pipnet_s21_stage7_p16', # Model name to select correct prototype labels from PROTO_LABELS_DICT
     'checkpoint_name': 'net_trained_best',
 
     # Dataset params
     'dataset': 'geometric_shapes_no_noise',
-    'image_path': 'class_6/img_0000.png',
+    'image_path': 'class_2/img_0094.png', # 'class_2/img_0031.png'
     'sample_from_classes': [
-        'class_1',
-        'class_2',
-        'class_3',
+        # 'class_1',
+        # 'class_2',
+        # 'class_3',
         'class_4',
         'class_5',
         'class_6',
@@ -64,7 +67,7 @@ GLOBAL_CFG = {
         'class_8',
         'class_9',
     ],
-    'samples_count_per_class': 1,
+    'samples_count_per_class': 2,
     'target_class': None,
 
     # Attribution method params
@@ -85,34 +88,14 @@ GLOBAL_CFG = {
         'title_fontsize': 16,
         'w_space': 0.1,             # Horizontal space between subplots
         'h_space': 0.25,            # Vertical space between subplots
+        'individual_title_fontsize': 12, # Font size for individual prototype titles
+        'individual_h_space': 1.0, # Vertical space for individual prototype plots
         'save_dpi': 300,            # High resolution for saved figures
     },
 
     'random_seed': 42,
     'gpu_id': 0,
     'output_dir': str(base_path / 'visualizations' / 'idg_interpretations'),
-}
-
-# --- NEW: Custom Label Definitions ---
-def class_idx_to_name(idx: int) -> str:
-    """Maps a class index to a human-readable name."""
-    class_map = {
-        0: "1 Circle", 1: "1 Triangle", 2: "1 Hexagon",
-        3: "2 Circles", 4: "2 Triangles", 5: "2 Hexagons",
-        6: "3 Circles", 7: "3 Triangles", 8: "3 Hexagons",
-    }
-    return class_map.get(idx, f"Class {idx}")
-
-# --- NEW: Parametric Prototype Labels ---
-# Define labels for different models in one place.
-ALL_PROTOTYPE_LABELS = {
-    'pipnet': {
-        0: "Count-1", 1: "Circ(3)", 2: "Tri(2, 3)", 3: "Count-1",
-        4: "Circ(:)", 5: "Dead", 6: "Tri(1, 3)", 7: "Hex(3)",
-        8: "Circ(2)", 9: "Hex(2, 3)", 10: "Hex(1)", 11: "Count-2",
-        12: "Circ(1, 2)", 13: "Hex(1, 2)", 14: "Count-1", 15: "Dead"
-    },
-    'default': {i: f"P{i}" for i in range(800)} # Fallback
 }
 
 def ATTR_FUNC(attr_method):
@@ -305,10 +288,12 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
     attr_func = ATTR_FUNC(config['attr_method'])
     print("Using attribution method: " + config['attr_method'])
 
-    prototype_label_map = ALL_PROTOTYPE_LABELS.get(
+    prototype_label_map = PROTO_LABELS_DICT.get(
         config.get('model_name', 'default'),
-        ALL_PROTOTYPE_LABELS['default']
+        [{"prototype": i, "label": f"Prototype {i}"} for i in range(800)]
     )
+    # map from prototype index to label
+    prototype_label_map = {p['prototype']: p['label'] for p in prototype_label_map}
 
     # Load and transform the image
     try:
@@ -357,11 +342,11 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
         is_intermediate_onehot = isinstance(net.module._intermediate, OneHotEncoder)
         if is_intermediate_onehot:
             importance_scalars = net.module._intermediate(clamped_counts)
+            importance_scalars = importance_scalars.squeeze(0)
         else:
             importance_scalars = None
         
         clamped_counts = clamped_counts.squeeze(0)
-        importance_scalars = importance_scalars.squeeze(0)
 
         # Construct the virtual classification matrix
         classification_weights = torch.zeros((net.module._num_classes, net.module._num_prototypes), device=image_tensor.device)
@@ -382,6 +367,12 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
 
     # Filter for prototypes whose weighted activation is above the threshold
     active_protos_indices = torch.where(weighted_activations > config['prototype_activation_threshold'])[0]
+
+    # Sort active prototypes by their contribution (weighted activation) in descending order
+    if len(active_protos_indices) > 0:
+        active_proto_contributions = weighted_activations[active_protos_indices]
+        sorted_indices = torch.argsort(active_proto_contributions, descending=True)
+        active_protos_indices = active_protos_indices[sorted_indices]
     if len(active_protos_indices) == 0:
         print("No prototypes were active above the threshold. Nothing to interpret.")
         return
@@ -502,13 +493,16 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
         os.makedirs(individual_output_dir, exist_ok=True)
 
         num_maps = len(individual_attribution_maps)
-        
-        # Force a single-column layout
-        num_cols = 1
-        num_rows = num_maps # Each map gets its own row
 
-        # Adjust figsize to be tall and narrow, scaling with the number of plots
-        fig_ind, axes_ind = plt.subplots(num_rows, num_cols, figsize=(6, num_rows * 5), squeeze=False)
+        # Create a 3xK grid layout
+        num_rows = 3
+        if num_maps == 0:
+            num_cols = 1
+        else:
+            num_cols = math.ceil(num_maps / num_rows)
+
+        # Adjust figsize to accommodate the grid
+        fig_ind, axes_ind = plt.subplots(num_rows, num_cols, figsize=(num_cols * 5, num_rows * 5), squeeze=False)
         axes_ind = axes_ind.flatten()
 
         for idx, proto_item in enumerate(individual_attribution_maps):
@@ -528,15 +522,20 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
                 contribution_str = ""
                 if proto_idx in individual_weighted_activations:
                     contribution = individual_weighted_activations[proto_idx]
-                    contribution_str = f" (Contrib: {contribution:.2f})"
+                    contribution_str = f"\n{contribution:.2f} (Contribution)"
                 
-                prototype_display_name = prototype_label_map.get(proto_idx, f"P{proto_idx}")
+                prototype_label = prototype_label_map.get(proto_idx, f"P{proto_idx}")
+                if prototype_label != f"P{proto_idx}":
+                    prototype_display_name = f'Prototype #{proto_idx} "{prototype_label}"'
+                else:
+                    prototype_display_name = f"Prototype #{proto_idx}"
+                    
                 title = (
-                    f"{prototype_display_name}{contribution_str}\n"
-                    f"Constant Attribution: {np.mean(attr_map_np):.2e}"
+                    f"{prototype_display_name}{contribution_str}; "
+                    f"\nConstant Attribution: {np.mean(attr_map_np):.2f}"
                 )
                 
-                ax.set_title(title, fontsize=12) # Kept the title on the subplot
+                ax.set_title(title, fontsize=viz_config.get('individual_title_fontsize', 10))
                 ax.axis('off')
                 continue
 
@@ -544,9 +543,13 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
             contribution_str = ""
             if proto_idx in individual_weighted_activations:
                 contribution = individual_weighted_activations[proto_idx]
-                contribution_str = f" (Contrib: {contribution:.2f})"
+                contribution_str = f"\n{contribution:.2f} (Contribution)"
             
-            prototype_display_name = prototype_label_map.get(proto_idx, f"P{proto_idx}")
+            prototype_label = prototype_label_map.get(proto_idx, f"P{proto_idx}")
+            if prototype_label != f"P{proto_idx}":
+                prototype_display_name = f'Prototype #{proto_idx} "{prototype_label}"'
+            else:
+                prototype_display_name = f"Prototype #{proto_idx}"
             title = f"{prototype_display_name}{contribution_str}"
 
             viz.visualize_image_attr(
@@ -558,13 +561,18 @@ def interpret_prototypes(net, testloader, classes, device, config, is_count_pipn
                 outlier_perc=100 - viz_config['percentile'],
                 plt_fig_axis=(fig_ind, ax),
                 show_colorbar=False, # Colorbar remains disabled
-                title=title,         # The subplot title is kept as requested
                 alpha_overlay=viz_config['alpha_overlay'],
                 use_pyplot=False
             )
+            ax.set_title(title, fontsize=viz_config.get('individual_title_fontsize', 10))
 
-        # Use tight_layout for automatic spacing.
-        plt.tight_layout()
+        # Hide unused subplots
+        for i in range(num_maps, num_rows * num_cols):
+            fig_ind.delaxes(axes_ind.flatten()[i])
+
+        # Adjust layout to prevent title overlap
+        fig_ind.subplots_adjust(hspace=viz_config.get('individual_h_space', 0.5))
+        plt.tight_layout(rect=[0, 0, 1, 0.98]) # Adjust layout to make room for suptitle
 
         # Save the complete figure with high resolution
         fig_ind_path = os.path.join(individual_output_dir, f"{model_name_prefix}_individual_prototypes_{img_name}_{config['attr_method']}.png")

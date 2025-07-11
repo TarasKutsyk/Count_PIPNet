@@ -13,10 +13,12 @@ testing of both counting and classification capabilities.
 
 import os
 import random
-from typing import Dict, List, Tuple, Optional, Union, Any
+from typing import Dict, List, Tuple, Optional, Any
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import matplotlib.pyplot as plt
+import argparse
+
 
 # Default configuration
 CONFIG = {
@@ -124,9 +126,6 @@ class GeometricShapesGenerator:
         random.seed(self.seed)
         np.random.seed(self.seed)
         
-        # Create output directories
-        self._create_output_directories()
-        
         # Define color mapping for shape types to ensure consistent colors
         self.shape_colors = {
             'circle': (50, 50, 200),      # Blue-ish
@@ -151,6 +150,9 @@ class GeometricShapesGenerator:
             os.makedirs(os.path.join(self.output_dir, 'test', f'class_{i}'), exist_ok=True)
     
     def generate_dataset(self, train_samples_per_class=None, test_samples_per_class=None):
+        # Create output directories before generating
+        self._create_output_directories()
+        
         # Use config values if not provided
         train_samples_per_class = train_samples_per_class or self.config['train_samples_per_class']
         test_samples_per_class = test_samples_per_class or self.config['test_samples_per_class']
@@ -425,7 +427,46 @@ class GeometricShapesGenerator:
         if x1 < x2 and y1 < y2:
             return (x1, y1, x2, y2)
         return None
-    
+
+    def visualize_class_grid(self) -> plt.Figure:
+        """
+        Generates and visualizes one sample image for each class in a grid.
+        Best suited for a number of classes that fits a grid, like 9 for a 3x3.
+        """
+        num_classes = len(self.class_definitions)
+        if num_classes == 0:
+            print("No classes to visualize.")
+            return plt.figure()
+            
+        # Determine grid size, aiming for a square-like layout
+        cols = int(np.ceil(np.sqrt(num_classes)))
+        rows = int(np.ceil(num_classes / cols))
+        
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.5, rows * 3.5))
+        axes = axes.flatten()  # Flatten to make iteration easy
+
+        for i, (shape_type, count) in enumerate(self.class_definitions):
+            class_desc = f"{count} {shape_type}{'s' if count > 1 else ''}"
+            
+            # Generate one sample image for the class
+            img = self._generate_image(shape_type, count)
+
+            border_size = 2  # The width of the border in pixels
+            img_with_border = ImageOps.expand(img, border=border_size, fill='black')
+            
+            ax = axes[i]
+            ax.imshow(img_with_border) # Display the image with the border
+            ax.set_title(f"Class {i+1}\n{class_desc}", fontsize=10)
+            ax.axis('off')
+            
+        # Hide any unused subplots
+        for i in range(num_classes, len(axes)):
+            axes[i].axis('off')
+
+        # fig.suptitle("Dataset Samples (One Per Class)", fontsize=16)
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout for suptitle
+        return fig
+
     def visualize_samples(self, num_samples: int = 2) -> plt.Figure:
         """
         Generate and visualize sample images from each class.
@@ -441,43 +482,75 @@ class GeometricShapesGenerator:
         num_classes = len(self.class_definitions)
         fig, axes = plt.subplots(num_classes, num_samples, 
                                 figsize=(num_samples * 3, num_classes * 3))
-        
+        if num_classes == 1: # Ensure axes is a numpy array for consistent indexing
+            axes = np.array([axes])
+        if num_samples == 1:
+            axes = axes.reshape(-1, 1)
+
         for i, (shape_type, count) in enumerate(self.class_definitions):
             class_desc = f"{count} {shape_type}{'s' if count>1 else ''}"
             
             for j in range(num_samples):
                 img = self._generate_image(shape_type, count)
                 
-                if num_classes > 1 and num_samples > 1:
-                    axes[i, j].imshow(img)
-                    if j == 0:  # Only show class description on first sample
-                        axes[i, j].set_title(f"Class {i+1}\n{class_desc}", fontsize=10)
-                    axes[i, j].axis('off')
-                else:
-                    axes[i].imshow(img)
-                    axes[i].set_title(f"Class {i+1}\n{class_desc}")
-                    axes[i].axis('off')
-        
+                ax = axes[i, j]
+                ax.imshow(img)
+                if j == 0:  # Only show class description on first sample
+                    ax.set_title(f"Class {i+1}\n{class_desc}", fontsize=10)
+                ax.axis('off')
+
         plt.tight_layout()
         return fig
 
 
-# Example usage
+# Main execution block
 if __name__ == "__main__":
-    # Customize config if needed
+    parser = argparse.ArgumentParser(
+        description="Generate or visualize a geometric shapes dataset.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        '--viz_only',
+        action='store_true',
+        help="If set, only visualize a grid of samples (one per class)\ninstead of generating the full dataset."
+    )
+    args = parser.parse_args()
+    
+    # Create a clean 9-class configuration for the 3x3 grid visualization
     my_config = CONFIG.copy()
-    # Example of modifying the class definitions:
-    # my_config['class_definitions'] = [
-    #     ('circle', 1), ('square', 1), ('triangle', 1),  # Three classes with 1 object
-    #     ('circle', 2), ('square', 2), ('triangle', 2),  # Three classes with 2 objects
-    # ]
-    
-    # Create generator with the configuration
+    my_config['class_definitions'] = [
+        ('circle', 1),   ('triangle', 1),   ('hexagon', 1),
+        ('circle', 2),   ('triangle', 2),   ('hexagon', 2),
+        ('circle', 3),   ('triangle', 3),   ('hexagon', 3),
+    ]
+
+    # Create generator with the updated configuration
     generator = GeometricShapesGenerator(my_config)
-    
-    generator.generate_dataset()
-    
-    # Visualize samples and save the visualization
-    fig = generator.visualize_samples(num_samples=3)
-    plt.savefig("geometric_shapes_samples.png")
-    plt.show()
+
+    if args.viz_only:
+        # --- Visualization Only Mode ---
+        print("--- Visualization Only Mode ---")
+        print("Generating a grid of samples (one per class)...")
+        
+        # Use the new method to show one sample from each of the 9 classes
+        fig = generator.visualize_class_grid()
+        
+        save_path = "geometric_shapes_grid_visualization.png"
+        plt.savefig(save_path)
+        print(f"Visualization saved to {save_path}")
+        plt.show()
+
+    else:
+        # --- Full Dataset Generation Mode (Original functionality) ---
+        print("--- Full Dataset Generation Mode ---")
+        generator.generate_dataset()
+        
+        # After generating, visualize a few samples from each class
+        print("\nVisualizing a few generated samples...")
+        fig = generator.visualize_samples(num_samples=3)
+        
+        save_path = "geometric_shapes_samples.png"
+        plt.savefig(save_path, dpi=300)
+        print(f"Dataset generated successfully in: {generator.output_dir}")
+        print(f"A sample visualization has been saved to {save_path}")
+        plt.show()

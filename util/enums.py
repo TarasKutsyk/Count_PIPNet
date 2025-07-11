@@ -16,5 +16,41 @@ prototype_labels = {
         {"prototype": 13, "label": "Hex(1, 2)"},
         {"prototype": 14, "label": "Count-1"},
         {"prototype": 15, "label":  "Dead"}
-    ]
+    ],
+    '20250705_111247_9_final_s42_stage7_p16_linear_train': [
+        {"prototype": 0, "label":  "Circ(3)"},
+        {"prototype": 1, "label":  "Hex(1, 2)"},
+        {"prototype": 2, "label":  "Hex(1, 2)"},
+        {"prototype": 3, "label":  "Dead"},
+        {"prototype": 4, "label":  "Tri(1, 2)"},
+        {"prototype": 5, "label":  "Hex(1)"},
+        {"prototype": 6, "label":  "Hex(3)"},
+        {"prototype": 7, "label":  "Tri(3)"},
+        {"prototype": 8, "label":  "Circ(1)"},
+        {"prototype": 9, "label":  "Tri(1)"},
+        {"prototype": 10, "label": "Tri(1)"},
+        {"prototype": 11, "label": "Hex(1)"},
+        {"prototype": 12, "label": "Circ(1, 2)"},
+        {"prototype": 13, "label": "Circ(1)"},
+        {"prototype": 14, "label": "Tri(1)"},
+        {"prototype": 15, "label":  "Dead"}
+    ],
+    '20250706_032740_5_final_s21_stage7_p16_onehot_current_grad_train': [
+        {"prototype": 0, "label":  "Tri(:)"},
+        {"prototype": 1, "label":  "Tri(:)"},
+        {"prototype": 2, "label":  "Tri(:)"},
+        {"prototype": 3, "label":  "Circ, Hex"},
+        {"prototype": 4, "label":  "Circ(1)"},
+        {"prototype": 5, "label":  "Circ(:)"},
+        {"prototype": 6, "label":  "Circ, Hex"},
+        {"prototype": 7, "label":  "Tri(:)"},
+        {"prototype": 8, "label":  "Circ, Hex"},
+        {"prototype": 9, "label":  "Hex(:)"},
+        {"prototype": 10, "label": "Hex(:)"},
+        {"prototype": 11, "label": "Tri(:)"},
+        {"prototype": 12, "label": "Circ(:)"},
+        {"prototype": 13, "label": "Tri(1)"},
+        {"prototype": 14, "label": "Hex(3)"},
+        {"prototype": 15, "label":  "Dead"}
+    ],
 }
