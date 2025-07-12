@@ -12,6 +12,7 @@ import torchvision
 from util.func import get_patch_size
 from util.histograms import plot_prototype_activations_histograms, plot_prototype_activations_by_class
 from util.enums import prototype_labels as enums_prototype_labels
+from PIL import ImageOps
 
 import random
 
@@ -428,8 +429,9 @@ def vizualize_network_pipnet(net, projectloader, num_classes, device, foldername
                 # Create side-by-side visualization with original and heatmap
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
                 
-                # Show original image on the left
-                ax1.imshow(img_np)
+                # Show original image on the left (with 2px black border)
+                img_with_border = ImageOps.expand(Image.fromarray(img_np), border=2, fill='black')
+                ax1.imshow(np.array(img_with_border))
                 rect = plt.Rectangle((w_min, h_min), w_max-w_min, h_max-h_min, 
                                     fill=False, edgecolor='yellow', linewidth=2)
                 ax1.add_patch(rect)

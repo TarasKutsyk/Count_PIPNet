@@ -397,6 +397,7 @@ def plot_prototype_activations_by_class(
     num_bins_continuous: int = 50,
     normalize_frequencies: bool = True,
     filter_outlier_prototypes: bool = True,
+    use_overlay: bool = False,
     return_type='mean_values'
 ) -> List[int]:
     """
@@ -555,8 +556,18 @@ def plot_prototype_activations_by_class(
         return initial_prototypes_to_plot
 
     # Define a color palette for distinguishing classes in plots
+    def hex_to_rgba(h, alpha=1.0):
+        h = h.lstrip('#')
+        return f"rgba({tuple(int(h[i:i+2], 16) for i in (0, 2, 4))}, {alpha})"
+
     bright_colors = ["#FF4500","#00CED1","#FFD700","#32CD32","#BA55D3","#FF6347","#4169E1","#2E8B57","#FF1493","#1E90FF","#FF8C00","#00FA9A","#9932CC","#00BFFF","#FF69B4"]
-    class_colors = {cls: bright_colors[i % len(bright_colors)] for i, cls in enumerate(unique_classes)}
+    
+    # Use transparent colors if overlay mode is active
+    if use_overlay:
+        plot_colors = [hex_to_rgba(c, alpha=0.6) for c in bright_colors]
+    else:
+        plot_colors = bright_colors
+    class_colors = {cls: plot_colors[i % len(plot_colors)] for i, cls in enumerate(unique_classes)}
 
     # Create a structure to store the mean prototype value per class
     mean_prototype_value_per_class = {}
@@ -709,7 +720,6 @@ def plot_prototype_activations_by_class(
                 y=y_values_for_plot,        # Use either normalized frequency or counts
                 name=f"{class_name}",
                 marker=dict(color=class_colors.get(cls, '#cccccc'), line=dict(width=0)),
-                opacity=0.9 if is_top_class else 0.7,
                 width=bar_width             # Use calculated bin width for continuous case
             ))
 
@@ -815,7 +825,7 @@ def plot_prototype_activations_by_class(
                 ),
 
                 legend_title_text="Class", # Set the title for the legend box
-                barmode='overlay',       # Overlay bars from different classes at the same x-value
+                barmode='overlay' if use_overlay else 'stack',
                 bargap=0.1,              # Space between bars for different x-values
                 bargroupgap=0.0,         # No space between bars at the same x-value (for overlay)
 
